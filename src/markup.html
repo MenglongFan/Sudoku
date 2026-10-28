@@ -44,6 +44,7 @@
   <div class="win-card">
     <h2>完成 🎉</h2>
     <p id="win-text">棋盘已填满且唯一解正确。</p>
+    <p id="win-best" class="win-best"></p>
     <button id="btn-win-reset" class="btn" type="button">再来一局</button>
   </div>
 </div>
@@ -56,5 +57,16 @@
   <div class="gen-card">
     <div class="pause-title">已暂停</div>
     <button id="btn-resume" class="btn" type="button">继续</button>
+  </div>
+</div>
+
+<div id="resume" class="gen-overlay" hidden>
+  <div class="gen-card">
+    <div class="resume-title">发现进行中的对局</div>
+    <p id="resume-info" class="resume-info"></p>
+    <div class="resume-actions">
+      <button id="btn-resume-keep" class="btn" type="button">继续上一局</button>
+      <button id="btn-resume-new" class="btn btn-ghost" type="button">开新局</button>
+    </div>
   </div>
 </div>

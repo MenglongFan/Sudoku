@@ -128,4 +128,15 @@ test('撤销/重做按钮存在且 disabled 状态与历史同步', () => {
   assert.strictEqual(elementsById['btn-redo'].disabled, st.future.length === 0);
 });
 
+test('resume 控件已绑定（继续上一局 / 开新局按钮存在）', () => {
+  assert.ok(elementsById['btn-resume-keep'], '继续上一局按钮应存在');
+  assert.ok(elementsById['btn-resume-new'], '开新局按钮应存在');
+});
+
+test('localStorage 缺失时降级：bootstrap 后状态可用不阻塞', () => {
+  // node 环境无 localStorage，bootstrap 应直接开新局而非卡在 resume 弹窗
+  assert.ok(UI._getState(), '状态应已建立（未卡在 resume）');
+  assert.strictEqual(UI._getState().status, 'playing');
+});
+
 console.log(`\n${passed} 个测试通过`);

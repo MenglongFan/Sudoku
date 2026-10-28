@@ -211,4 +211,50 @@ test('formatTime 输出 mm:ss', () => {
   assert.strictEqual(Game.formatTime(600), '10:00');
 });
 
+// ---- #6 持久化 ----
+test('serialize → deserialize 往返保持 values/notes/time/counters/history', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  Game.setValue(g, 0, 2, 4);
+  Game.toggleNote(g, 0, 5, 7);
+  Game.setPaused(g, true);
+  g.time = 123; g.hintsUsed = 2; g.undosUsed = 1;
+  const g2 = Game.deserialize(JSON.parse(JSON.stringify(Game.serialize(g))));
+  assert.ok(g2, '反序列化应成功');
+  assert.deepStrictEqual(g2.values, g.values);
+  assert.deepStrictEqual(Array.from(g2.notes), Array.from(g.notes));
+  assert.strictEqual(g2.time, 123);
+  assert.strictEqual(g2.paused, true);
+  assert.strictEqual(g2.hintsUsed, 2);
+  assert.strictEqual(g2.undosUsed, 1);
+  assert.strictEqual(g2.history.length, g.history.length);
+  assert.deepStrictEqual(g2.givenMask, g.givenMask);
+  assert.strictEqual(g2.status, 'playing');
+});
+
+test('deserialize 后 recompute 正确（胜利随 values 更新）', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  for (let i = 0; i < 81; i++) if (!g.givenMask[i]) Game.setValue(g, (i / 9 | 0), i % 9, SOLUTION[i]);
+  assert.strictEqual(g.status, 'won');
+  const g2 = Game.deserialize(Game.serialize(g));
+  assert.strictEqual(g2.status, 'won');
+  assert.strictEqual(g2.conflicts.size, 0);
+});
+
+test('deserialize 处理非法输入返回 null', () => {
+  assert.strictEqual(Game.deserialize(null), null);
+  assert.strictEqual(Game.deserialize({ foo: 1 }), null);
+  assert.strictEqual(Game.deserialize(42), null);
+  assert.strictEqual(Game.deserialize(undefined), null);
+});
+
+test('deserialize 后 undo 可回退（历史动作有效）', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  Game.setValue(g, 0, 2, 4);
+  Game.setValue(g, 0, 3, 6);
+  const g2 = Game.deserialize(Game.serialize(g));
+  Game.undo(g2);
+  assert.strictEqual(g2.values[3], 0);   // 回退第二个动作
+  assert.strictEqual(g2.values[2], 4);   // 第一个仍在
+});
+
 console.log(`\n${passed} 个测试通过`);

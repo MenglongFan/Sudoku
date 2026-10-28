@@ -160,6 +160,9 @@ html, body {
   font-size: 15px;
   box-shadow: var(--shadow);
 }
+.resume-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.resume-info { color: var(--muted); margin: 0 0 14px; font-size: 14px; }
+.resume-actions { display: flex; gap: 10px; justify-content: center; }
 
 .board {
   display: grid;
@@ -278,6 +281,7 @@ html, body {
 }
 .win-card h2 { margin: 0 0 8px; font-size: 24px; }
 .win-card p { margin: 0 0 18px; color: var(--muted); }
+.win-best { color: var(--accent); font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
   .cell, .btn, .pad-num { transition: none; }

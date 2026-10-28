@@ -36,6 +36,8 @@
   let btnRedo = null;
   let btnPause = null;
   let pauseEl = null;
+  let saveTimer = null;       // 节流写盘定时器（#6）
+  let recordedWin = false;    // 本局最佳成绩是否已记录（#6）
 
   function currentDifficulty() {
     return diffSel && diffSel.value ? diffSel.value : 'medium';
@@ -56,13 +58,17 @@
     btnPause = doc.getElementById('btn-pause');
     pauseEl = doc.getElementById('pause');
 
-    state = Game.newGame(currentDifficulty());
-
     buildBoard();
     buildPad();
     wireToolbar();
     wireKeyboard();
-    render();
+
+    const saved = readSave();
+    if (saved && saved.status === 'playing') {
+      showResume(saved);
+    } else {
+      startNewGame();
+    }
 
     if (!IS_NODE) {
       setInterval(() => {
@@ -129,21 +135,102 @@
     if (btnPause) btnPause.addEventListener('click', togglePause);
     const resume = doc.getElementById('btn-resume');
     if (resume) resume.addEventListener('click', () => setPaused(false));
+    const resumeKeep = doc.getElementById('btn-resume-keep');
+    if (resumeKeep) resumeKeep.addEventListener('click', onResumeKeep);
+    const resumeNew = doc.getElementById('btn-resume-new');
+    if (resumeNew) resumeNew.addEventListener('click', onResumeNew);
   }
 
   function wireKeyboard() {
     docRoot.addEventListener('keydown', onKeydown);
   }
 
+  // ---- #6 持久化：localStorage 封装（不可用时静默降级）----
+  function lsGet() {
+    try { return docRoot.localStorage || null; } catch (e) { return null; }
+  }
+  function readSave() {
+    const ls = lsGet(); if (!ls) return null;
+    try { const raw = ls.getItem('sudoku:save'); return raw ? JSON.parse(raw) : null; }
+    catch (e) { return null; }
+  }
+  function writeSave(st) {
+    const ls = lsGet(); if (!ls || !st) return;
+    try { ls.setItem('sudoku:save', JSON.stringify(Game.serialize(st))); } catch (e) {}
+  }
+  function clearSave() {
+    const ls = lsGet(); if (!ls) return;
+    try { ls.removeItem('sudoku:save'); } catch (e) {}
+  }
+  function readBest() {
+    const ls = lsGet(); if (!ls) return {};
+    try { const raw = ls.getItem('sudoku:best'); return raw ? JSON.parse(raw) : {}; }
+    catch (e) { return {}; }
+  }
+  function writeBest(diff, time) {
+    const ls = lsGet(); if (!ls) return;
+    try {
+      const best = readBest();
+      if (best[diff] == null || time < best[diff]) { best[diff] = time; ls.setItem('sudoku:best', JSON.stringify(best)); }
+    } catch (e) {}
+  }
+  // 节流写盘：~500ms 合并多次动作；仅进行中写盘（胜利后由 clearSave 处理）。
+  function scheduleSave() {
+    if (IS_NODE || !state) return;
+    if (state.status !== 'playing') return;
+    if (saveTimer) return;
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      if (state && state.status === 'playing') writeSave(state);
+    }, 500);
+  }
+
+  function startNewGame() {
+    state = Game.newGame(currentDifficulty());
+    recordedWin = false;
+    render();
+  }
+
+  function showResume(saved) {
+    const el = doc.getElementById('resume');
+    if (!el) { startNewGame(); return; }
+    const info = doc.getElementById('resume-info');
+    if (info) {
+      const lbl = DIFF_LABELS[saved.puzzle.difficulty] || saved.puzzle.difficulty;
+      info.textContent = '难度 ' + lbl + ' · 已用 ' + Game.formatTime(saved.time || 0);
+    }
+    el.hidden = false;
+  }
+  function onResumeKeep() {
+    const el = doc.getElementById('resume');
+    const saved = readSave();
+    if (saved) {
+      state = Game.deserialize(saved);
+      recordedWin = (state.status === 'won');
+      if (el) el.hidden = true;
+      render();
+      if (state.paused) setPaused(true);
+    } else {
+      if (el) el.hidden = true;
+      startNewGame();
+    }
+  }
+  function onResumeNew() {
+    clearSave();
+    startNewGame();
+    const el = doc.getElementById('resume');
+    if (el) el.hidden = true;
+  }
+
   function onCellClick(e) {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     const t = e.currentTarget;
     Game.select(state, Number(t.dataset.r), Number(t.dataset.c));
     render();
   }
 
   function onPadClick(e) {
-    if (state.paused || !state.selected) return;
+    if (!state || state.paused || !state.selected) return;
     const d = Number(e.currentTarget.dataset.d);
     if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, d);
     else Game.setValue(state, state.selected.r, state.selected.c, d);
@@ -151,30 +238,30 @@
   }
 
   function onEraseClick() {
-    if (state.paused || !state.selected) return;
+    if (!state || state.paused || !state.selected) return;
     Game.erase(state, state.selected.r, state.selected.c);
     render();
   }
 
   function onNoteToggle() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     Game.toggleMode(state);
     render();
   }
 
   function onAutoNote() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     Game.autoCandidates(state);
     render();
   }
 
   function onUndo() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     if (Game.undo(state)) render();
   }
 
   function onRedo() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     if (Game.redo(state)) render();
   }
 
@@ -191,6 +278,7 @@
 
   function onKeydown(e) {
     const k = e.key;
+    if (!state) return;   // resume 弹窗期间忽略全部键盘输入
     // 暂停/恢复键始终可用
     if (k === 'p' || k === 'P') { togglePause(); e.preventDefault(); return; }
     if (k === 'Escape') { if (state && state.paused) { togglePause(); e.preventDefault(); } return; }
@@ -231,22 +319,24 @@
 
   // 新局：先显示「生成中」，让浏览器有机会绘制，再异步生成（避免白屏）。
   function onNewGame() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     const diff = currentDifficulty();
     if (genEl) genEl.hidden = false;
     if (statusEl) statusEl.textContent = '生成中…';
     // 让「生成中」先渲染，再跑同步生成
     setTimeout(() => {
       state = Game.newGame(diff);
+      recordedWin = false;
       if (genEl) genEl.hidden = true;
       render();
     }, 0);
   }
 
   function resetGame() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     // 重置当前谜题（清空玩家填入，保留 givens）
     state = Game.createGame(state.puzzle);
+    recordedWin = false;
     render();
   }
 
@@ -262,6 +352,7 @@
   }
 
   function render() {
+    if (!state) return;
     const sel = state.selected;
     const selIdx = sel ? Logic.idx(sel.r, sel.c) : -1;
     const selVal = selIdx >= 0 ? state.values[selIdx] : 0;
@@ -320,6 +411,18 @@
     if (btnUndo) btnUndo.disabled = !Game.canUndo(state);
     if (btnRedo) btnRedo.disabled = !Game.canRedo(state);
     if (btnPause) btnPause.textContent = state.paused ? '继续' : '暂停';
+
+    // 胜利时记录本难度最佳并清存档；进行中每次动作节流写盘（#6）。
+    if (state.status === 'won' && !recordedWin) {
+      writeBest(state.difficulty, state.time);
+      const best = readBest();
+      const wb = doc.getElementById('win-best');
+      const bestTime = best[state.difficulty] != null ? best[state.difficulty] : state.time;
+      if (wb) wb.textContent = '本难度最佳 ' + Game.formatTime(bestTime);
+      clearSave();
+      recordedWin = true;
+    }
+    scheduleSave();
   }
 
   return { bootstrap, _getState: () => state, _cellEls: () => cellEls };

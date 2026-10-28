@@ -167,6 +167,9 @@ html, body {
   font-size: 15px;
   box-shadow: var(--shadow);
 }
+.resume-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.resume-info { color: var(--muted); margin: 0 0 14px; font-size: 14px; }
+.resume-actions { display: flex; gap: 10px; justify-content: center; }
 
 .board {
   display: grid;
@@ -285,6 +288,7 @@ html, body {
 }
 .win-card h2 { margin: 0 0 8px; font-size: 24px; }
 .win-card p { margin: 0 0 18px; color: var(--muted); }
+.win-best { color: var(--accent); font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
   .cell, .btn, .pad-num { transition: none; }
@@ -339,6 +343,7 @@ html, body {
   <div class="win-card">
     <h2>完成 🎉</h2>
     <p id="win-text">棋盘已填满且唯一解正确。</p>
+    <p id="win-best" class="win-best"></p>
     <button id="btn-win-reset" class="btn" type="button">再来一局</button>
   </div>
 </div>
@@ -351,6 +356,17 @@ html, body {
   <div class="gen-card">
     <div class="pause-title">已暂停</div>
     <button id="btn-resume" class="btn" type="button">继续</button>
+  </div>
+</div>
+
+<div id="resume" class="gen-overlay" hidden>
+  <div class="gen-card">
+    <div class="resume-title">发现进行中的对局</div>
+    <p id="resume-info" class="resume-info"></p>
+    <div class="resume-actions">
+      <button id="btn-resume-keep" class="btn" type="button">继续上一局</button>
+      <button id="btn-resume-new" class="btn btn-ghost" type="button">开新局</button>
+    </div>
   </div>
 </div>
 
@@ -1197,6 +1213,73 @@ html, body {
     return (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
   }
 
+  // ---- 持久化：序列化 / 反序列化（#6）----
+  // 仅保留重建对局所需的字段；history/future 为增量动作（{i,v,n} 纯数据），可直接 JSON 化。
+  function serialize(state) {
+    return {
+      v: 1,
+      puzzle: {
+        givens: Array.from(state.givens),
+        solution: state.solution ? Array.from(state.solution) : null,
+        difficulty: state.difficulty,
+        grade: state.grade,
+        approximate: state.approximate,
+      },
+      values: Array.from(state.values),
+      notes: Array.from(state.notes),
+      givenMask: state.givenMask,
+      mode: state.mode,
+      time: state.time,
+      paused: state.paused,
+      hintsUsed: state.hintsUsed,
+      undosUsed: state.undosUsed,
+      status: state.status,
+      selected: state.selected,
+      givensCount: state.givensCount,
+      history: state.history,
+      future: state.future,
+    };
+  }
+
+  function deserialize(obj) {
+    if (!obj || obj.v !== 1 || !obj.puzzle || !Array.isArray(obj.values)) return null;
+    const p = obj.puzzle;
+    const givens = Array.from(p.givens);
+    const givenMask = (obj.givenMask && obj.givenMask.length === 81)
+      ? obj.givenMask
+      : givens.map(v => (v !== 0 ? 1 : 0));
+    const state = {
+      puzzle: {
+        givens,
+        solution: p.solution ? Array.from(p.solution) : null,
+        difficulty: p.difficulty || 'medium',
+        grade: p.grade != null ? p.grade : 0,
+        approximate: !!p.approximate,
+      },
+      givens,
+      solution: p.solution ? Array.from(p.solution) : null,
+      values: Array.from(obj.values),
+      givenMask,
+      notes: Uint16Array.from((obj.notes && obj.notes.length === 81) ? obj.notes : new Array(81).fill(0)),
+      mode: obj.mode === 'note' ? 'note' : 'digit',
+      difficulty: p.difficulty || 'medium',
+      grade: p.grade != null ? p.grade : 0,
+      approximate: !!p.approximate,
+      givensCount: obj.givensCount != null ? obj.givensCount : givens.filter(v => v !== 0).length,
+      selected: obj.selected || null,
+      status: obj.status === 'won' ? 'won' : 'playing',
+      conflicts: new Set(),
+      history: Array.isArray(obj.history) ? obj.history : [],
+      future: Array.isArray(obj.future) ? obj.future : [],
+      time: obj.time || 0,
+      paused: !!obj.paused,
+      hintsUsed: obj.hintsUsed || 0,
+      undosUsed: obj.undosUsed || 0,
+    };
+    recompute(state);
+    return state;
+  }
+
   return {
     createGame, newGame, select,
     setValue, erase, toggleNote, autoCandidates, clearNotes,
@@ -1204,6 +1287,7 @@ html, body {
     undo, redo, canUndo, canRedo,
     tick, setPaused,
     recompute, formatTime,
+    serialize, deserialize,
   };
 });
 
@@ -1245,6 +1329,8 @@ html, body {
   let btnRedo = null;
   let btnPause = null;
   let pauseEl = null;
+  let saveTimer = null;       // 节流写盘定时器（#6）
+  let recordedWin = false;    // 本局最佳成绩是否已记录（#6）
 
   function currentDifficulty() {
     return diffSel && diffSel.value ? diffSel.value : 'medium';
@@ -1265,13 +1351,17 @@ html, body {
     btnPause = doc.getElementById('btn-pause');
     pauseEl = doc.getElementById('pause');
 
-    state = Game.newGame(currentDifficulty());
-
     buildBoard();
     buildPad();
     wireToolbar();
     wireKeyboard();
-    render();
+
+    const saved = readSave();
+    if (saved && saved.status === 'playing') {
+      showResume(saved);
+    } else {
+      startNewGame();
+    }
 
     if (!IS_NODE) {
       setInterval(() => {
@@ -1338,21 +1428,102 @@ html, body {
     if (btnPause) btnPause.addEventListener('click', togglePause);
     const resume = doc.getElementById('btn-resume');
     if (resume) resume.addEventListener('click', () => setPaused(false));
+    const resumeKeep = doc.getElementById('btn-resume-keep');
+    if (resumeKeep) resumeKeep.addEventListener('click', onResumeKeep);
+    const resumeNew = doc.getElementById('btn-resume-new');
+    if (resumeNew) resumeNew.addEventListener('click', onResumeNew);
   }
 
   function wireKeyboard() {
     docRoot.addEventListener('keydown', onKeydown);
   }
 
+  // ---- #6 持久化：localStorage 封装（不可用时静默降级）----
+  function lsGet() {
+    try { return docRoot.localStorage || null; } catch (e) { return null; }
+  }
+  function readSave() {
+    const ls = lsGet(); if (!ls) return null;
+    try { const raw = ls.getItem('sudoku:save'); return raw ? JSON.parse(raw) : null; }
+    catch (e) { return null; }
+  }
+  function writeSave(st) {
+    const ls = lsGet(); if (!ls || !st) return;
+    try { ls.setItem('sudoku:save', JSON.stringify(Game.serialize(st))); } catch (e) {}
+  }
+  function clearSave() {
+    const ls = lsGet(); if (!ls) return;
+    try { ls.removeItem('sudoku:save'); } catch (e) {}
+  }
+  function readBest() {
+    const ls = lsGet(); if (!ls) return {};
+    try { const raw = ls.getItem('sudoku:best'); return raw ? JSON.parse(raw) : {}; }
+    catch (e) { return {}; }
+  }
+  function writeBest(diff, time) {
+    const ls = lsGet(); if (!ls) return;
+    try {
+      const best = readBest();
+      if (best[diff] == null || time < best[diff]) { best[diff] = time; ls.setItem('sudoku:best', JSON.stringify(best)); }
+    } catch (e) {}
+  }
+  // 节流写盘：~500ms 合并多次动作；仅进行中写盘（胜利后由 clearSave 处理）。
+  function scheduleSave() {
+    if (IS_NODE || !state) return;
+    if (state.status !== 'playing') return;
+    if (saveTimer) return;
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      if (state && state.status === 'playing') writeSave(state);
+    }, 500);
+  }
+
+  function startNewGame() {
+    state = Game.newGame(currentDifficulty());
+    recordedWin = false;
+    render();
+  }
+
+  function showResume(saved) {
+    const el = doc.getElementById('resume');
+    if (!el) { startNewGame(); return; }
+    const info = doc.getElementById('resume-info');
+    if (info) {
+      const lbl = DIFF_LABELS[saved.puzzle.difficulty] || saved.puzzle.difficulty;
+      info.textContent = '难度 ' + lbl + ' · 已用 ' + Game.formatTime(saved.time || 0);
+    }
+    el.hidden = false;
+  }
+  function onResumeKeep() {
+    const el = doc.getElementById('resume');
+    const saved = readSave();
+    if (saved) {
+      state = Game.deserialize(saved);
+      recordedWin = (state.status === 'won');
+      if (el) el.hidden = true;
+      render();
+      if (state.paused) setPaused(true);
+    } else {
+      if (el) el.hidden = true;
+      startNewGame();
+    }
+  }
+  function onResumeNew() {
+    clearSave();
+    startNewGame();
+    const el = doc.getElementById('resume');
+    if (el) el.hidden = true;
+  }
+
   function onCellClick(e) {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     const t = e.currentTarget;
     Game.select(state, Number(t.dataset.r), Number(t.dataset.c));
     render();
   }
 
   function onPadClick(e) {
-    if (state.paused || !state.selected) return;
+    if (!state || state.paused || !state.selected) return;
     const d = Number(e.currentTarget.dataset.d);
     if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, d);
     else Game.setValue(state, state.selected.r, state.selected.c, d);
@@ -1360,30 +1531,30 @@ html, body {
   }
 
   function onEraseClick() {
-    if (state.paused || !state.selected) return;
+    if (!state || state.paused || !state.selected) return;
     Game.erase(state, state.selected.r, state.selected.c);
     render();
   }
 
   function onNoteToggle() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     Game.toggleMode(state);
     render();
   }
 
   function onAutoNote() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     Game.autoCandidates(state);
     render();
   }
 
   function onUndo() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     if (Game.undo(state)) render();
   }
 
   function onRedo() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     if (Game.redo(state)) render();
   }
 
@@ -1400,6 +1571,7 @@ html, body {
 
   function onKeydown(e) {
     const k = e.key;
+    if (!state) return;   // resume 弹窗期间忽略全部键盘输入
     // 暂停/恢复键始终可用
     if (k === 'p' || k === 'P') { togglePause(); e.preventDefault(); return; }
     if (k === 'Escape') { if (state && state.paused) { togglePause(); e.preventDefault(); } return; }
@@ -1440,22 +1612,24 @@ html, body {
 
   // 新局：先显示「生成中」，让浏览器有机会绘制，再异步生成（避免白屏）。
   function onNewGame() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     const diff = currentDifficulty();
     if (genEl) genEl.hidden = false;
     if (statusEl) statusEl.textContent = '生成中…';
     // 让「生成中」先渲染，再跑同步生成
     setTimeout(() => {
       state = Game.newGame(diff);
+      recordedWin = false;
       if (genEl) genEl.hidden = true;
       render();
     }, 0);
   }
 
   function resetGame() {
-    if (state.paused) return;
+    if (!state || state.paused) return;
     // 重置当前谜题（清空玩家填入，保留 givens）
     state = Game.createGame(state.puzzle);
+    recordedWin = false;
     render();
   }
 
@@ -1471,6 +1645,7 @@ html, body {
   }
 
   function render() {
+    if (!state) return;
     const sel = state.selected;
     const selIdx = sel ? Logic.idx(sel.r, sel.c) : -1;
     const selVal = selIdx >= 0 ? state.values[selIdx] : 0;
@@ -1529,6 +1704,18 @@ html, body {
     if (btnUndo) btnUndo.disabled = !Game.canUndo(state);
     if (btnRedo) btnRedo.disabled = !Game.canRedo(state);
     if (btnPause) btnPause.textContent = state.paused ? '继续' : '暂停';
+
+    // 胜利时记录本难度最佳并清存档；进行中每次动作节流写盘（#6）。
+    if (state.status === 'won' && !recordedWin) {
+      writeBest(state.difficulty, state.time);
+      const best = readBest();
+      const wb = doc.getElementById('win-best');
+      const bestTime = best[state.difficulty] != null ? best[state.difficulty] : state.time;
+      if (wb) wb.textContent = '本难度最佳 ' + Game.formatTime(bestTime);
+      clearSave();
+      recordedWin = true;
+    }
+    scheduleSave();
   }
 
   return { bootstrap, _getState: () => state, _cellEls: () => cellEls };

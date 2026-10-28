@@ -205,6 +205,73 @@
     return (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
   }
 
+  // ---- 持久化：序列化 / 反序列化（#6）----
+  // 仅保留重建对局所需的字段；history/future 为增量动作（{i,v,n} 纯数据），可直接 JSON 化。
+  function serialize(state) {
+    return {
+      v: 1,
+      puzzle: {
+        givens: Array.from(state.givens),
+        solution: state.solution ? Array.from(state.solution) : null,
+        difficulty: state.difficulty,
+        grade: state.grade,
+        approximate: state.approximate,
+      },
+      values: Array.from(state.values),
+      notes: Array.from(state.notes),
+      givenMask: state.givenMask,
+      mode: state.mode,
+      time: state.time,
+      paused: state.paused,
+      hintsUsed: state.hintsUsed,
+      undosUsed: state.undosUsed,
+      status: state.status,
+      selected: state.selected,
+      givensCount: state.givensCount,
+      history: state.history,
+      future: state.future,
+    };
+  }
+
+  function deserialize(obj) {
+    if (!obj || obj.v !== 1 || !obj.puzzle || !Array.isArray(obj.values)) return null;
+    const p = obj.puzzle;
+    const givens = Array.from(p.givens);
+    const givenMask = (obj.givenMask && obj.givenMask.length === 81)
+      ? obj.givenMask
+      : givens.map(v => (v !== 0 ? 1 : 0));
+    const state = {
+      puzzle: {
+        givens,
+        solution: p.solution ? Array.from(p.solution) : null,
+        difficulty: p.difficulty || 'medium',
+        grade: p.grade != null ? p.grade : 0,
+        approximate: !!p.approximate,
+      },
+      givens,
+      solution: p.solution ? Array.from(p.solution) : null,
+      values: Array.from(obj.values),
+      givenMask,
+      notes: Uint16Array.from((obj.notes && obj.notes.length === 81) ? obj.notes : new Array(81).fill(0)),
+      mode: obj.mode === 'note' ? 'note' : 'digit',
+      difficulty: p.difficulty || 'medium',
+      grade: p.grade != null ? p.grade : 0,
+      approximate: !!p.approximate,
+      givensCount: obj.givensCount != null ? obj.givensCount : givens.filter(v => v !== 0).length,
+      selected: obj.selected || null,
+      status: obj.status === 'won' ? 'won' : 'playing',
+      conflicts: new Set(),
+      history: Array.isArray(obj.history) ? obj.history : [],
+      future: Array.isArray(obj.future) ? obj.future : [],
+      time: obj.time || 0,
+      paused: !!obj.paused,
+      hintsUsed: obj.hintsUsed || 0,
+      undosUsed: obj.undosUsed || 0,
+    };
+    recompute(state);
+    return state;
+  }
+
   return {
     createGame, newGame, select,
     setValue, erase, toggleNote, autoCandidates, clearNotes,
@@ -212,5 +279,6 @@
     undo, redo, canUndo, canRedo,
     tick, setPaused,
     recompute, formatTime,
+    serialize, deserialize,
   };
 });
