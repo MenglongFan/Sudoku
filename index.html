@@ -22,6 +22,10 @@
   --same-bg: #dfe6ff;
   --selected-bg: #c9d2ff;
   --shadow: 0 6px 24px rgba(20, 24, 48, 0.10);
+  --hint-bg: #fff3bf;
+  --hint-target-bg: #ffd43b;
+  --hint-border: #f08c00;
+  --conflict-weak: #ffe3e3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -39,9 +43,13 @@
     --conflict: #ff6b6f;
     --peer-bg: #1d2230;
     --same-bg: #2a3354;
-    --selected-bg: #36406b;
-    --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
-  }
+  --selected-bg: #36406b;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --hint-bg: #3a2f12;
+  --hint-target-bg: #6b4f12;
+  --hint-border: #f0a000;
+  --conflict-weak: #3a1818;
+}
 }
 
 * { box-sizing: border-box; }
@@ -267,6 +275,35 @@ html, body {
   line-height: 1.6;
 }
 
+/* 提示条：一句话解释当前提示 */
+.hint-bar {
+  width: min(92vw, calc(92vh - 200px), 560px);
+  margin: 0 auto;
+  background: var(--hint-bg);
+  border: 1px solid var(--hint-border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: var(--shadow);
+}
+.hint-bar[hidden] { display: none; }
+.hint-bar.hint-conflict {
+  background: var(--conflict-weak);
+  border-color: var(--conflict);
+  color: var(--conflict);
+}
+
+/* 提示高亮：相关格（浅）与主要目标格（强） */
+.cell.hint { background: var(--hint-bg); }
+.cell.hint-target {
+  background: var(--hint-target-bg);
+  outline: 2px solid var(--hint-border);
+  outline-offset: -2px;
+  z-index: 3;
+}
+
 .win-overlay {
   position: fixed;
   inset: 0;
@@ -321,11 +358,14 @@ html, body {
   <main class="play">
     <div id="board" class="board" role="grid" aria-label="数独棋盘"></div>
 
+    <div id="hint-bar" class="hint-bar" hidden aria-live="polite"></div>
+
     <div class="toolbar" role="group" aria-label="对局工具">
       <button id="btn-note" class="btn btn-toggle" type="button" aria-pressed="false">笔记</button>
       <button id="btn-autonote" class="btn btn-ghost" type="button">自动候选</button>
       <button id="btn-undo" class="btn btn-ghost" type="button">撤销</button>
       <button id="btn-redo" class="btn btn-ghost" type="button">重做</button>
+      <button id="btn-hint" class="btn btn-ghost" type="button">提示</button>
       <button id="btn-pause" class="btn btn-ghost" type="button">暂停</button>
     </div>
 
@@ -335,7 +375,7 @@ html, body {
   <p class="hint">
     点格或方向键选中，数字键 / 数字盘填数，Backspace 擦除。<br>
     笔记模式（N）下数字键标记候选；给定格不可改；与同行、同列、同宫重复会即时标红（不阻断）。<br>
-    撤销 Ctrl/⌘+Z，重做 Ctrl/⌘+Shift+Z，暂停 P。
+    撤销 Ctrl/⌘+Z，重做 Ctrl/⌘+Shift+Z，提示 H，暂停 P。
   </p>
 </div>
 
@@ -1293,6 +1333,146 @@ html, body {
 
 'use strict';
 /**
+ * 提示引擎（HintEngine，纯函数，无 DOM、无副作用，可在 node 下被测试）。
+ * 依赖 SudokuLogic（computeCandidates / findConflicts / PEERS / UNITS / bit 等）。
+ * 该文件会被 build.js 内联进最终单文件 index.html。
+ *
+ * 契约（见 docs/design.md §4.5）：
+ *  1. 若盘面存在冲突 → 返回 {type:'conflict'}，提示先修正并高亮冲突格。
+ *  2. 否则推导当前候选，找全局最低层可推进技巧（T1 唯一候选 → T2 隐藏单）。
+ *  3. 若无 T1/T2 可推 → 基于唯一解给出降级提示（不声称技巧名）。
+ *
+ * 产出统一结构：{ type, technique, tier, cells[], digit, target, text }
+ *   - type: 'conflict' | 'technique' | 'solution'
+ *   - technique: 'conflict' | 'naked-single' | 'hidden-single' | 'solution'
+ *   - tier: 0 | 1 | 2 | 'solution'
+ *   - cells: 需高亮的"相关格"索引数组
+ *   - digit: 涉及数字（conflict 为 null）
+ *   - target: 主目标格索引（用于更强强调）
+ *   - text: 一句话解释
+ *
+ * 提示不修改盘面、不产生历史；调用方负责 hintsUsed++ 与高亮渲染。
+ */
+(function (root, factory) {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = factory(require('./logic.js'));
+  } else {
+    root.SudokuHint = factory(root.SudokuLogic);
+  }
+})(typeof self !== 'undefined' ? self : this, function (Logic) {
+  'use strict';
+
+  function popcount(m) { let c = 0; while (m) { c += m & 1; m >>>= 1; } return c; }
+  function firstDigit(mask) { return 31 - Math.clz32(mask) + 1; }
+  // 单元类型标签：0..8 行、9..17 列、18..26 宫
+  function unitLabel(u) { return u < 9 ? '该行' : (u < 18 ? '该列' : '该宫'); }
+
+  // values: 当前盘面（1..9 或 0）；solution: 唯一解数组或 null；selected: {r,c}|null
+  function getHint(values, solution, selected) {
+    // 1. 冲突优先
+    const conflicts = Logic.findConflicts(values);
+    if (conflicts.size > 0) {
+      const cells = Array.from(conflicts);
+      return {
+        type: 'conflict',
+        technique: 'conflict',
+        tier: 0,
+        cells: cells,
+        digit: null,
+        target: cells[0],
+        text: '盘面存在冲突：同一行 / 列 / 宫内出现重复数字。请先修正高亮的格子。',
+      };
+    }
+
+    const selIdx = selected ? Logic.idx(selected.r, selected.c) : -1;
+
+    // 2. 最低层技巧：T1 唯一候选（某空格候选只剩一个，且为正确解）
+    const t1 = []; // {i, d}
+    for (let i = 0; i < 81; i++) {
+      if (values[i] !== 0) continue;
+      const cand = Logic.computeCandidates(values, i);
+      if (popcount(cand) === 1) {
+        const d = firstDigit(cand);
+        if (!solution || solution[i] === d) t1.push({ i, d });
+      }
+    }
+    // T2 隐藏单：某 unit 内某数字 d 的候选仅落在一个空格（且为正确解）
+    const t2 = []; // {i, d, u}
+    for (let u = 0; u < 27; u++) {
+      const unit = Logic.UNITS[u];
+      for (let d = 1; d <= 9; d++) {
+        const bm = Logic.bit(d);
+        let holder = -1, cnt = 0;
+        for (let q = 0; q < 9; q++) {
+          const i = unit[q];
+          if (values[i] === 0 && (Logic.computeCandidates(values, i) & bm)) { holder = i; cnt++; }
+        }
+        if (cnt === 1 && (!solution || solution[holder] === d)) {
+          t2.push({ i: holder, d, u });
+        }
+      }
+    }
+
+    // 选择：selected 命中优先，否则全局最低层（T1 先于 T2，行优先）
+    let pick = null;
+    if (selIdx >= 0) pick = t1.find(x => x.i === selIdx) || t2.find(x => x.i === selIdx) || null;
+    if (!pick) pick = t1[0] || t2[0] || null;
+
+    if (pick) {
+      const r = Logic.rowOf(pick.i), c = Logic.colOf(pick.i);
+      if (pick.u != null) {
+        // T2 隐藏单：相关格 = 该 unit 内所有空格
+        const cells = Logic.UNITS[pick.u].filter(i => values[i] === 0);
+        return {
+          type: 'technique',
+          technique: 'hidden-single',
+          tier: 2,
+          cells: cells,
+          digit: pick.d,
+          target: pick.i,
+          text: 'R' + (r + 1) + 'C' + (c + 1) + ' 是' + unitLabel(pick.u) + '唯一能放 ' + pick.d + ' 的格（隐藏单 · Hidden Single）。',
+        };
+      }
+      return {
+        type: 'technique',
+        technique: 'naked-single',
+        tier: 1,
+        cells: [pick.i],
+        digit: pick.d,
+        target: pick.i,
+        text: 'R' + (r + 1) + 'C' + (c + 1) + ' 只剩数字 ' + pick.d + ' 一个候选（唯一候选 · Naked Single）。',
+      };
+    }
+
+    // 3. 降级：基于唯一解（无 T1/T2 可推，或局面已深入至 T3+）
+    if (!solution) return null;
+    let target = -1, cur = 0;
+    if (selIdx >= 0 && values[selIdx] !== solution[selIdx]) { target = selIdx; cur = values[selIdx]; }
+    else {
+      for (let i = 0; i < 81; i++) { if (values[i] !== solution[i]) { target = i; cur = values[i]; break; } }
+    }
+    if (target < 0) return null; // 已解且无误，无提示
+    const r = Logic.rowOf(target), c = Logic.colOf(target);
+    const d = solution[target];
+    const text = cur === 0
+      ? 'R' + (r + 1) + 'C' + (c + 1) + ' 应填入 ' + d + '（依据唯一解推导）。'
+      : 'R' + (r + 1) + 'C' + (c + 1) + ' 当前填了 ' + cur + '，但正确应为 ' + d + '。';
+    return {
+      type: 'solution',
+      technique: 'solution',
+      tier: 'solution',
+      cells: [target],
+      digit: d,
+      target: target,
+      text: text,
+    };
+  }
+
+  return { getHint };
+});
+
+'use strict';
+/**
  * UI 层 + 控制器事件绑定（依赖 SudokuLogic / SudokuGame / SudokuGenerator / SudokuGrader）。
  * node 下（烟雾测试）通过 global 注入 document/window；浏览器下取 window。
  * 该文件会被 build.js 内联进最终单文件 index.html。
@@ -1303,11 +1483,11 @@ html, body {
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./logic.js'), require('./game.js'), require('./generator.js'), require('./grader.js'), global);
+    module.exports = factory(require('./logic.js'), require('./game.js'), require('./generator.js'), require('./grader.js'), require('./hint.js'), global);
   } else {
-    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root.SudokuGenerator, root.SudokuGrader, root);
+    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root.SudokuGenerator, root.SudokuGrader, root.SudokuHint, root);
   }
-})(typeof self !== 'undefined' ? self : this, function (Logic, Game, Generator, Grader, docRoot) {
+})(typeof self !== 'undefined' ? self : this, function (Logic, Game, Generator, Grader, Hint, docRoot) {
   'use strict';
 
   const DIFF_LABELS = { easy: '简单', medium: '中等', hard: '困难', expert: '专家' };
@@ -1329,6 +1509,9 @@ html, body {
   let btnRedo = null;
   let btnPause = null;
   let pauseEl = null;
+  let hintBtn = null;
+  let hintBar = null;
+  let currentHint = null;     // 当前提示对象（#7）：渲染时高亮 cells/target
   let saveTimer = null;       // 节流写盘定时器（#6）
   let recordedWin = false;    // 本局最佳成绩是否已记录（#6）
 
@@ -1350,6 +1533,8 @@ html, body {
     btnRedo = doc.getElementById('btn-redo');
     btnPause = doc.getElementById('btn-pause');
     pauseEl = doc.getElementById('pause');
+    hintBtn = doc.getElementById('btn-hint');
+    hintBar = doc.getElementById('hint-bar');
 
     buildBoard();
     buildPad();
@@ -1426,6 +1611,7 @@ html, body {
     if (btnUndo) btnUndo.addEventListener('click', onUndo);
     if (btnRedo) btnRedo.addEventListener('click', onRedo);
     if (btnPause) btnPause.addEventListener('click', togglePause);
+    if (hintBtn) hintBtn.addEventListener('click', onHint);
     const resume = doc.getElementById('btn-resume');
     if (resume) resume.addEventListener('click', () => setPaused(false));
     const resumeKeep = doc.getElementById('btn-resume-keep');
@@ -1525,6 +1711,7 @@ html, body {
   function onPadClick(e) {
     if (!state || state.paused || !state.selected) return;
     const d = Number(e.currentTarget.dataset.d);
+    currentHint = null;
     if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, d);
     else Game.setValue(state, state.selected.r, state.selected.c, d);
     render();
@@ -1532,30 +1719,54 @@ html, body {
 
   function onEraseClick() {
     if (!state || state.paused || !state.selected) return;
+    currentHint = null;
     Game.erase(state, state.selected.r, state.selected.c);
     render();
   }
 
   function onNoteToggle() {
     if (!state || state.paused) return;
+    currentHint = null;
     Game.toggleMode(state);
     render();
   }
 
   function onAutoNote() {
     if (!state || state.paused) return;
+    currentHint = null;
     Game.autoCandidates(state);
     render();
   }
 
   function onUndo() {
     if (!state || state.paused) return;
+    currentHint = null;
     if (Game.undo(state)) render();
   }
 
   function onRedo() {
     if (!state || state.paused) return;
+    currentHint = null;
     if (Game.redo(state)) render();
+  }
+
+  function onHint() {
+    if (!state || state.paused || state.status !== 'playing') return;
+    const h = Hint.getHint(state.values, state.solution, state.selected);
+    if (!h) {
+      const had = !!currentHint;
+      currentHint = null;
+      if (hintBar) {
+        hintBar.hidden = false;
+        hintBar.classList.remove('hint-conflict');
+        hintBar.textContent = '当前局面已完成（或无可提示步骤），无需提示。';
+      }
+      if (had) render();
+      return;
+    }
+    state.hintsUsed++;
+    currentHint = h;
+    render();
   }
 
   function setPaused(paused) {
@@ -1584,6 +1795,7 @@ html, body {
     if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) {
       Game.redo(state); render(); e.preventDefault(); return;
     }
+    if (k === 'h' || k === 'H') { onHint(); e.preventDefault(); return; }
     if (k === 'n' || k === 'N') { Game.toggleMode(state); render(); e.preventDefault(); return; }
 
     if (k === 'ArrowUp' || k === 'ArrowDown' || k === 'ArrowLeft' || k === 'ArrowRight') {
@@ -1620,6 +1832,7 @@ html, body {
     setTimeout(() => {
       state = Game.newGame(diff);
       recordedWin = false;
+      currentHint = null;
       if (genEl) genEl.hidden = true;
       render();
     }, 0);
@@ -1628,6 +1841,7 @@ html, body {
   function resetGame() {
     if (!state || state.paused) return;
     // 重置当前谜题（清空玩家填入，保留 givens）
+    currentHint = null;
     state = Game.createGame(state.puzzle);
     recordedWin = false;
     render();
@@ -1675,6 +1889,8 @@ html, body {
       el.classList.toggle('conflict', state.conflicts.has(i));
       el.classList.toggle('peer', selPeers ? selPeers.includes(i) : false);
       el.classList.toggle('same', selVal !== 0 && i !== selIdx && v === selVal);
+      el.classList.toggle('hint', currentHint ? currentHint.cells.includes(i) : false);
+      el.classList.toggle('hint-target', currentHint ? (i === currentHint.target) : false);
     }
 
     if (winEl) {
@@ -1694,6 +1910,7 @@ html, body {
       if (state.grade > 0) t += ' · 技巧层级 T' + state.grade;
       if (state.approximate) t += '（近似）';
       t += ' · 提示数 ' + state.givensCount;
+      if (state.hintsUsed) t += ' · 提示 ' + state.hintsUsed + ' 次';
       if (state.mode === 'note') t += ' · 笔记模式';
       statusEl.textContent = t;
     }
@@ -1715,6 +1932,17 @@ html, body {
       clearSave();
       recordedWin = true;
     }
+    // 提示条：展示当前提示文案（无提示则隐藏）。冲突提示用警示色。
+    if (hintBar) {
+      if (currentHint) {
+        hintBar.hidden = false;
+        hintBar.textContent = currentHint.text;
+        hintBar.classList.toggle('hint-conflict', currentHint.type === 'conflict');
+      } else {
+        hintBar.hidden = true;
+      }
+    }
+
     scheduleSave();
   }
 

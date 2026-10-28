@@ -139,4 +139,24 @@ test('localStorage 缺失时降级：bootstrap 后状态可用不阻塞', () => 
   assert.strictEqual(UI._getState().status, 'playing');
 });
 
+test('提示：按钮存在，点击后计数+1、提示条显示文案、棋盘高亮', () => {
+  const hintBtn = elementsById['btn-hint'];
+  const hintBar = elementsById['hint-bar'];
+  assert.ok(hintBtn, '提示按钮应存在');
+  const board = elementsById['board'];
+  const st0 = UI._getState();
+  // 选中一个空格作为提示焦点（确保有稳定目标）
+  let ei = -1;
+  for (let i = 0; i < 81; i++) { if (st0.givenMask[i] === 0 && st0.values[i] === 0) { ei = i; break; } }
+  if (ei >= 0) fire(board.children[ei], 'click');
+  const before = UI._getState().hintsUsed;
+  fire(hintBtn, 'click');
+  const st1 = UI._getState();
+  assert.strictEqual(st1.hintsUsed, before + 1, '提示计数应 +1');
+  assert.strictEqual(hintBar.hidden, false, '提示条应显示');
+  assert.ok(hintBar.textContent && hintBar.textContent.length > 0, '提示文案非空');
+  const hasHint = board.children.some(c => c.classList.contains('hint') || c.classList.contains('hint-target'));
+  assert.ok(hasHint, '至少一格应带提示高亮类');
+});
+
 console.log(`\n${passed} 个测试通过`);

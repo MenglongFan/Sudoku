@@ -22,11 +22,14 @@
   <main class="play">
     <div id="board" class="board" role="grid" aria-label="数独棋盘"></div>
 
+    <div id="hint-bar" class="hint-bar" hidden aria-live="polite"></div>
+
     <div class="toolbar" role="group" aria-label="对局工具">
       <button id="btn-note" class="btn btn-toggle" type="button" aria-pressed="false">笔记</button>
       <button id="btn-autonote" class="btn btn-ghost" type="button">自动候选</button>
       <button id="btn-undo" class="btn btn-ghost" type="button">撤销</button>
       <button id="btn-redo" class="btn btn-ghost" type="button">重做</button>
+      <button id="btn-hint" class="btn btn-ghost" type="button">提示</button>
       <button id="btn-pause" class="btn btn-ghost" type="button">暂停</button>
     </div>
 
@@ -36,7 +39,7 @@
   <p class="hint">
     点格或方向键选中，数字键 / 数字盘填数，Backspace 擦除。<br>
     笔记模式（N）下数字键标记候选；给定格不可改；与同行、同列、同宫重复会即时标红（不阻断）。<br>
-    撤销 Ctrl/⌘+Z，重做 Ctrl/⌘+Shift+Z，暂停 P。
+    撤销 Ctrl/⌘+Z，重做 Ctrl/⌘+Shift+Z，提示 H，暂停 P。
   </p>
 </div>
 

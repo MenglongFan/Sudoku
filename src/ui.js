@@ -10,11 +10,11 @@
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./logic.js'), require('./game.js'), require('./generator.js'), require('./grader.js'), global);
+    module.exports = factory(require('./logic.js'), require('./game.js'), require('./generator.js'), require('./grader.js'), require('./hint.js'), global);
   } else {
-    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root.SudokuGenerator, root.SudokuGrader, root);
+    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root.SudokuGenerator, root.SudokuGrader, root.SudokuHint, root);
   }
-})(typeof self !== 'undefined' ? self : this, function (Logic, Game, Generator, Grader, docRoot) {
+})(typeof self !== 'undefined' ? self : this, function (Logic, Game, Generator, Grader, Hint, docRoot) {
   'use strict';
 
   const DIFF_LABELS = { easy: '简单', medium: '中等', hard: '困难', expert: '专家' };
@@ -36,6 +36,9 @@
   let btnRedo = null;
   let btnPause = null;
   let pauseEl = null;
+  let hintBtn = null;
+  let hintBar = null;
+  let currentHint = null;     // 当前提示对象（#7）：渲染时高亮 cells/target
   let saveTimer = null;       // 节流写盘定时器（#6）
   let recordedWin = false;    // 本局最佳成绩是否已记录（#6）
 
@@ -57,6 +60,8 @@
     btnRedo = doc.getElementById('btn-redo');
     btnPause = doc.getElementById('btn-pause');
     pauseEl = doc.getElementById('pause');
+    hintBtn = doc.getElementById('btn-hint');
+    hintBar = doc.getElementById('hint-bar');
 
     buildBoard();
     buildPad();
@@ -133,6 +138,7 @@
     if (btnUndo) btnUndo.addEventListener('click', onUndo);
     if (btnRedo) btnRedo.addEventListener('click', onRedo);
     if (btnPause) btnPause.addEventListener('click', togglePause);
+    if (hintBtn) hintBtn.addEventListener('click', onHint);
     const resume = doc.getElementById('btn-resume');
     if (resume) resume.addEventListener('click', () => setPaused(false));
     const resumeKeep = doc.getElementById('btn-resume-keep');
@@ -232,6 +238,7 @@
   function onPadClick(e) {
     if (!state || state.paused || !state.selected) return;
     const d = Number(e.currentTarget.dataset.d);
+    currentHint = null;
     if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, d);
     else Game.setValue(state, state.selected.r, state.selected.c, d);
     render();
@@ -239,30 +246,54 @@
 
   function onEraseClick() {
     if (!state || state.paused || !state.selected) return;
+    currentHint = null;
     Game.erase(state, state.selected.r, state.selected.c);
     render();
   }
 
   function onNoteToggle() {
     if (!state || state.paused) return;
+    currentHint = null;
     Game.toggleMode(state);
     render();
   }
 
   function onAutoNote() {
     if (!state || state.paused) return;
+    currentHint = null;
     Game.autoCandidates(state);
     render();
   }
 
   function onUndo() {
     if (!state || state.paused) return;
+    currentHint = null;
     if (Game.undo(state)) render();
   }
 
   function onRedo() {
     if (!state || state.paused) return;
+    currentHint = null;
     if (Game.redo(state)) render();
+  }
+
+  function onHint() {
+    if (!state || state.paused || state.status !== 'playing') return;
+    const h = Hint.getHint(state.values, state.solution, state.selected);
+    if (!h) {
+      const had = !!currentHint;
+      currentHint = null;
+      if (hintBar) {
+        hintBar.hidden = false;
+        hintBar.classList.remove('hint-conflict');
+        hintBar.textContent = '当前局面已完成（或无可提示步骤），无需提示。';
+      }
+      if (had) render();
+      return;
+    }
+    state.hintsUsed++;
+    currentHint = h;
+    render();
   }
 
   function setPaused(paused) {
@@ -291,6 +322,7 @@
     if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) {
       Game.redo(state); render(); e.preventDefault(); return;
     }
+    if (k === 'h' || k === 'H') { onHint(); e.preventDefault(); return; }
     if (k === 'n' || k === 'N') { Game.toggleMode(state); render(); e.preventDefault(); return; }
 
     if (k === 'ArrowUp' || k === 'ArrowDown' || k === 'ArrowLeft' || k === 'ArrowRight') {
@@ -327,6 +359,7 @@
     setTimeout(() => {
       state = Game.newGame(diff);
       recordedWin = false;
+      currentHint = null;
       if (genEl) genEl.hidden = true;
       render();
     }, 0);
@@ -335,6 +368,7 @@
   function resetGame() {
     if (!state || state.paused) return;
     // 重置当前谜题（清空玩家填入，保留 givens）
+    currentHint = null;
     state = Game.createGame(state.puzzle);
     recordedWin = false;
     render();
@@ -382,6 +416,8 @@
       el.classList.toggle('conflict', state.conflicts.has(i));
       el.classList.toggle('peer', selPeers ? selPeers.includes(i) : false);
       el.classList.toggle('same', selVal !== 0 && i !== selIdx && v === selVal);
+      el.classList.toggle('hint', currentHint ? currentHint.cells.includes(i) : false);
+      el.classList.toggle('hint-target', currentHint ? (i === currentHint.target) : false);
     }
 
     if (winEl) {
@@ -401,6 +437,7 @@
       if (state.grade > 0) t += ' · 技巧层级 T' + state.grade;
       if (state.approximate) t += '（近似）';
       t += ' · 提示数 ' + state.givensCount;
+      if (state.hintsUsed) t += ' · 提示 ' + state.hintsUsed + ' 次';
       if (state.mode === 'note') t += ' · 笔记模式';
       statusEl.textContent = t;
     }
@@ -422,6 +459,17 @@
       clearSave();
       recordedWin = true;
     }
+    // 提示条：展示当前提示文案（无提示则隐藏）。冲突提示用警示色。
+    if (hintBar) {
+      if (currentHint) {
+        hintBar.hidden = false;
+        hintBar.textContent = currentHint.text;
+        hintBar.classList.toggle('hint-conflict', currentHint.type === 'conflict');
+      } else {
+        hintBar.hidden = true;
+      }
+    }
+
     scheduleSave();
   }
 

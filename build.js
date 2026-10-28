@@ -1,6 +1,6 @@
 'use strict';
 // 开发期拼接脚本：把内联样式 + 骨架标记 + 各段纯 JS 拼成单文件零依赖 index.html。
-// 依赖顺序：logic -> solver -> grader -> generator -> game -> ui
+// 依赖顺序：logic -> solver -> grader -> generator -> game -> hint -> ui
 // 运行：node build.js  -> 生成 ./index.html
 const fs = require('fs');
 const path = require('path');
@@ -15,6 +15,7 @@ const solver = read('solver.js');
 const grader = read('grader.js');
 const generator = read('generator.js');
 const game = read('game.js');
+const hint = read('hint.js');
 const ui = read('ui.js');
 
 const html = `<!DOCTYPE html>
@@ -35,6 +36,7 @@ ${solver}
 ${grader}
 ${generator}
 ${game}
+${hint}
 ${ui}
 SudokuUI.bootstrap();
 </script>

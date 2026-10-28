@@ -15,6 +15,10 @@
   --same-bg: #dfe6ff;
   --selected-bg: #c9d2ff;
   --shadow: 0 6px 24px rgba(20, 24, 48, 0.10);
+  --hint-bg: #fff3bf;
+  --hint-target-bg: #ffd43b;
+  --hint-border: #f08c00;
+  --conflict-weak: #ffe3e3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,9 +36,13 @@
     --conflict: #ff6b6f;
     --peer-bg: #1d2230;
     --same-bg: #2a3354;
-    --selected-bg: #36406b;
-    --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
-  }
+  --selected-bg: #36406b;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --hint-bg: #3a2f12;
+  --hint-target-bg: #6b4f12;
+  --hint-border: #f0a000;
+  --conflict-weak: #3a1818;
+}
 }
 
 * { box-sizing: border-box; }
@@ -258,6 +266,35 @@ html, body {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+/* 提示条：一句话解释当前提示 */
+.hint-bar {
+  width: min(92vw, calc(92vh - 200px), 560px);
+  margin: 0 auto;
+  background: var(--hint-bg);
+  border: 1px solid var(--hint-border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: var(--shadow);
+}
+.hint-bar[hidden] { display: none; }
+.hint-bar.hint-conflict {
+  background: var(--conflict-weak);
+  border-color: var(--conflict);
+  color: var(--conflict);
+}
+
+/* 提示高亮：相关格（浅）与主要目标格（强） */
+.cell.hint { background: var(--hint-bg); }
+.cell.hint-target {
+  background: var(--hint-target-bg);
+  outline: 2px solid var(--hint-border);
+  outline-offset: -2px;
+  z-index: 3;
 }
 
 .win-overlay {
