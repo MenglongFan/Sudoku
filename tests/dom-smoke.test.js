@@ -95,4 +95,37 @@ test('Given 格点击只选中不填（给定值保留）', () => {
   assert.strictEqual(st2.values[gi], before, 'Given 格值保持');
 });
 
+test('笔记模式开关：点击后 mode 翻转且按钮 aria-pressed 同步', () => {
+  const noteBtn = elementsById['btn-note'];
+  assert.ok(noteBtn, '笔记按钮应存在');
+  const before = UI._getState().mode;
+  fire(noteBtn, 'click');
+  assert.strictEqual(UI._getState().mode, before === 'note' ? 'digit' : 'note');
+  assert.strictEqual(noteBtn.getAttribute('aria-pressed'), UI._getState().mode === 'note' ? 'true' : 'false');
+  fire(noteBtn, 'click'); // 切回，避免干扰后续
+  assert.strictEqual(UI._getState().mode, 'digit');
+});
+
+test('暂停：点击暂停后遮罩显示，继续后隐藏', () => {
+  const pauseBtn = elementsById['btn-pause'];
+  const pauseEl = elementsById['pause'];
+  const resume = elementsById['btn-resume'];
+  assert.ok(pauseBtn && pauseEl && resume, '暂停控件应存在');
+  fire(pauseBtn, 'click');
+  assert.strictEqual(UI._getState().paused, true);
+  assert.strictEqual(pauseEl.hidden, false);
+  fire(resume, 'click');
+  assert.strictEqual(UI._getState().paused, false);
+  assert.strictEqual(pauseEl.hidden, true);
+});
+
+test('撤销/重做按钮存在且 disabled 状态与历史同步', () => {
+  assert.ok(elementsById['btn-undo'], '撤销按钮应存在');
+  assert.ok(elementsById['btn-redo'], '重做按钮应存在');
+  const st = UI._getState();
+  // 前面数字盘填数已产生 1 条历史 → 撤销可用、重做分支空 → 重做禁用
+  assert.strictEqual(elementsById['btn-undo'].disabled, st.history.length === 0);
+  assert.strictEqual(elementsById['btn-redo'].disabled, st.future.length === 0);
+});
+
 console.log(`\n${passed} 个测试通过`);

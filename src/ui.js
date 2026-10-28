@@ -3,6 +3,10 @@
  * UI 层 + 控制器事件绑定（依赖 SudokuLogic / SudokuGame / SudokuGenerator / SudokuGrader）。
  * node 下（烟雾测试）通过 global 注入 document/window；浏览器下取 window。
  * 该文件会被 build.js 内联进最终单文件 index.html。
+ *
+ * 本文件覆盖：
+ *  - #4 候选数：笔记模式开关 + 自动候选 + 小数字网格渲染 + 键盘 N
+ *  - #5 撤销/重做 + 计时/暂停：按钮 + 计时显示 + 暂停遮罩拦截输入 + 键盘快捷键
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
@@ -14,6 +18,8 @@
   'use strict';
 
   const DIFF_LABELS = { easy: '简单', medium: '中等', hard: '困难', expert: '专家' };
+  // 仅在浏览器（非 node 测试环境）启动计时器，避免测试进程因 setInterval 挂起。
+  const IS_NODE = (typeof process !== 'undefined' && process.versions && process.versions.node);
 
   let state = null;
   let cellEls = [];
@@ -23,6 +29,13 @@
   let statusEl = null;
   let genEl = null;
   let diffSel = null;
+  let timerEl = null;
+  let btnNote = null;
+  let btnAutoNote = null;
+  let btnUndo = null;
+  let btnRedo = null;
+  let btnPause = null;
+  let pauseEl = null;
 
   function currentDifficulty() {
     return diffSel && diffSel.value ? diffSel.value : 'medium';
@@ -35,6 +48,13 @@
     statusEl = doc.getElementById('status');
     genEl = doc.getElementById('generating');
     diffSel = doc.getElementById('difficulty');
+    timerEl = doc.getElementById('timer');
+    btnNote = doc.getElementById('btn-note');
+    btnAutoNote = doc.getElementById('btn-autonote');
+    btnUndo = doc.getElementById('btn-undo');
+    btnRedo = doc.getElementById('btn-redo');
+    btnPause = doc.getElementById('btn-pause');
+    pauseEl = doc.getElementById('pause');
 
     state = Game.newGame(currentDifficulty());
 
@@ -43,6 +63,14 @@
     wireToolbar();
     wireKeyboard();
     render();
+
+    if (!IS_NODE) {
+      setInterval(() => {
+        if (!state) return;
+        Game.tick(state);
+        updateTimer();
+      }, 1000);
+    }
   }
 
   function buildBoard() {
@@ -94,6 +122,13 @@
     if (diffSel) diffSel.addEventListener('change', () => { /* 下次点「新局」生效，当前局不变 */ });
     const winReset = doc.getElementById('btn-win-reset');
     if (winReset) winReset.addEventListener('click', onNewGame);
+    if (btnNote) btnNote.addEventListener('click', onNoteToggle);
+    if (btnAutoNote) btnAutoNote.addEventListener('click', onAutoNote);
+    if (btnUndo) btnUndo.addEventListener('click', onUndo);
+    if (btnRedo) btnRedo.addEventListener('click', onRedo);
+    if (btnPause) btnPause.addEventListener('click', togglePause);
+    const resume = doc.getElementById('btn-resume');
+    if (resume) resume.addEventListener('click', () => setPaused(false));
   }
 
   function wireKeyboard() {
@@ -101,26 +136,75 @@
   }
 
   function onCellClick(e) {
+    if (state.paused) return;
     const t = e.currentTarget;
     Game.select(state, Number(t.dataset.r), Number(t.dataset.c));
     render();
   }
 
   function onPadClick(e) {
-    if (!state.selected) return;
+    if (state.paused || !state.selected) return;
     const d = Number(e.currentTarget.dataset.d);
-    Game.setValue(state, state.selected.r, state.selected.c, d);
+    if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, d);
+    else Game.setValue(state, state.selected.r, state.selected.c, d);
     render();
   }
 
   function onEraseClick() {
-    if (!state.selected) return;
+    if (state.paused || !state.selected) return;
     Game.erase(state, state.selected.r, state.selected.c);
     render();
   }
 
+  function onNoteToggle() {
+    if (state.paused) return;
+    Game.toggleMode(state);
+    render();
+  }
+
+  function onAutoNote() {
+    if (state.paused) return;
+    Game.autoCandidates(state);
+    render();
+  }
+
+  function onUndo() {
+    if (state.paused) return;
+    if (Game.undo(state)) render();
+  }
+
+  function onRedo() {
+    if (state.paused) return;
+    if (Game.redo(state)) render();
+  }
+
+  function setPaused(paused) {
+    if (!state) return;
+    Game.setPaused(state, paused);
+    if (pauseEl) pauseEl.hidden = !paused;
+  }
+
+  function togglePause() {
+    if (!state) return;
+    setPaused(!state.paused);
+  }
+
   function onKeydown(e) {
     const k = e.key;
+    // 暂停/恢复键始终可用
+    if (k === 'p' || k === 'P') { togglePause(); e.preventDefault(); return; }
+    if (k === 'Escape') { if (state && state.paused) { togglePause(); e.preventDefault(); } return; }
+    if (state && state.paused) return; // 暂停时拦截其余输入
+
+    if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'Z')) {
+      if (e.shiftKey) Game.redo(state); else Game.undo(state);
+      render(); e.preventDefault(); return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) {
+      Game.redo(state); render(); e.preventDefault(); return;
+    }
+    if (k === 'n' || k === 'N') { Game.toggleMode(state); render(); e.preventDefault(); return; }
+
     if (k === 'ArrowUp' || k === 'ArrowDown' || k === 'ArrowLeft' || k === 'ArrowRight') {
       if (!state.selected) state.selected = { r: 0, c: 0 };
       const dir = k === 'ArrowUp' ? 'up' : k === 'ArrowDown' ? 'down'
@@ -131,7 +215,11 @@
       return;
     }
     if (k >= '1' && k <= '9') {
-      if (state.selected) { Game.setValue(state, state.selected.r, state.selected.c, Number(k)); render(); }
+      if (state.selected) {
+        if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, Number(k));
+        else Game.setValue(state, state.selected.r, state.selected.c, Number(k));
+        render();
+      }
       e.preventDefault();
       return;
     }
@@ -143,6 +231,7 @@
 
   // 新局：先显示「生成中」，让浏览器有机会绘制，再异步生成（避免白屏）。
   function onNewGame() {
+    if (state.paused) return;
     const diff = currentDifficulty();
     if (genEl) genEl.hidden = false;
     if (statusEl) statusEl.textContent = '生成中…';
@@ -155,9 +244,21 @@
   }
 
   function resetGame() {
+    if (state.paused) return;
     // 重置当前谜题（清空玩家填入，保留 givens）
     state = Game.createGame(state.puzzle);
     render();
+  }
+
+  function notesMarkup(mask) {
+    let h = '<span class="notes-grid">';
+    for (let d = 1; d <= 9; d++) h += '<i>' + ((mask & Logic.bit(d)) ? d : '') + '</i>';
+    h += '</span>';
+    return h;
+  }
+
+  function updateTimer() {
+    if (timerEl) timerEl.textContent = Game.formatTime(state ? state.time : 0);
   }
 
   function render() {
@@ -169,7 +270,19 @@
     for (let i = 0; i < 81; i++) {
       const el = cellEls[i];
       const v = state.values[i];
-      el.textContent = v ? String(v) : '';
+
+      if (v) {
+        el.textContent = String(v);
+        el.classList.remove('notes');
+      } else if (state.notes[i]) {
+        el.textContent = '';
+        el.classList.add('notes');
+        el.innerHTML = notesMarkup(state.notes[i]);
+      } else {
+        el.textContent = '';
+        el.classList.remove('notes');
+        el.innerHTML = '';
+      }
 
       const given = state.givenMask[i] === 1;
       el.classList.toggle('given', given);
@@ -197,8 +310,16 @@
       if (state.grade > 0) t += ' · 技巧层级 T' + state.grade;
       if (state.approximate) t += '（近似）';
       t += ' · 提示数 ' + state.givensCount;
+      if (state.mode === 'note') t += ' · 笔记模式';
       statusEl.textContent = t;
     }
+
+    updateTimer();
+
+    if (btnNote) btnNote.setAttribute('aria-pressed', state.mode === 'note' ? 'true' : 'false');
+    if (btnUndo) btnUndo.disabled = !Game.canUndo(state);
+    if (btnRedo) btnRedo.disabled = !Game.canRedo(state);
+    if (btnPause) btnPause.textContent = state.paused ? '继续' : '暂停';
   }
 
   return { bootstrap, _getState: () => state, _cellEls: () => cellEls };

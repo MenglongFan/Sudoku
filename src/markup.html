@@ -11,6 +11,7 @@
           <option value="expert">专家</option>
         </select>
       </label>
+      <span id="timer" class="timer" aria-live="off">00:00</span>
       <button id="btn-new" class="btn" type="button">新局</button>
       <button id="btn-reset" class="btn btn-ghost" type="button">重置</button>
     </div>
@@ -20,12 +21,22 @@
 
   <main class="play">
     <div id="board" class="board" role="grid" aria-label="数独棋盘"></div>
+
+    <div class="toolbar" role="group" aria-label="对局工具">
+      <button id="btn-note" class="btn btn-toggle" type="button" aria-pressed="false">笔记</button>
+      <button id="btn-autonote" class="btn btn-ghost" type="button">自动候选</button>
+      <button id="btn-undo" class="btn btn-ghost" type="button">撤销</button>
+      <button id="btn-redo" class="btn btn-ghost" type="button">重做</button>
+      <button id="btn-pause" class="btn btn-ghost" type="button">暂停</button>
+    </div>
+
     <div id="pad" class="pad" role="group" aria-label="数字盘"></div>
   </main>
 
   <p class="hint">
     点格或方向键选中，数字键 / 数字盘填数，Backspace 擦除。<br>
-    Given 格不可改；与同行、同列、同宫重复会即时标红（不阻断）。填满唯一解即胜利。
+    笔记模式（N）下数字键标记候选；给定格不可改；与同行、同列、同宫重复会即时标红（不阻断）。<br>
+    撤销 Ctrl/⌘+Z，重做 Ctrl/⌘+Shift+Z，暂停 P。
   </p>
 </div>
 
@@ -39,4 +50,11 @@
 
 <div id="generating" class="gen-overlay" hidden>
   <div class="gen-card">生成中…</div>
+</div>
+
+<div id="pause" class="gen-overlay" hidden>
+  <div class="gen-card">
+    <div class="pause-title">已暂停</div>
+    <button id="btn-resume" class="btn" type="button">继续</button>
+  </div>
 </div>

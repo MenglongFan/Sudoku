@@ -3,6 +3,7 @@
 // 运行：node tests/game.test.js
 const assert = require('node:assert');
 const Game = require('../src/game.js');
+const Logic = require('../src/logic.js');
 
 let passed = 0;
 function test(name, fn) {
@@ -90,6 +91,124 @@ test('select 边界校验', () => {
   const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
   Game.select(g, -1, 0); assert.strictEqual(g.selected, null);
   Game.select(g, 0, 0);  assert.deepStrictEqual(g.selected, { r: 0, c: 0 });
+});
+
+// ---- #4 候选数 ----
+test('createGame 初始化 notes/mode/history/time/paused/givensCount', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  assert.ok(g.notes instanceof Uint16Array);
+  assert.strictEqual(g.notes.length, 81);
+  assert.strictEqual(g.mode, 'digit');
+  assert.deepStrictEqual(g.history, []);
+  assert.deepStrictEqual(g.future, []);
+  assert.strictEqual(g.time, 0);
+  assert.strictEqual(g.paused, false);
+  assert.strictEqual(g.givensCount, g.givens.filter(v => v !== 0).length);
+});
+
+test('toggleNote：空非给定格翻转候选位，记录历史', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  assert.strictEqual(Game.toggleNote(g, 0, 2, 7), true);
+  assert.strictEqual(g.notes[2] & Logic.bit(7), Logic.bit(7));
+  assert.strictEqual(g.history.length, 1);
+  // 再翻一次回到 0
+  Game.toggleNote(g, 0, 2, 7);
+  assert.strictEqual(g.notes[2] & Logic.bit(7), 0);
+});
+
+test('toggleNote：Given 格与已填格不可加候选', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  assert.strictEqual(Game.toggleNote(g, 0, 0, 3), false);   // (0,0)=5 给定
+  assert.strictEqual(g.notes[0], 0);
+  Game.setValue(g, 0, 2, 4);                                // (0,2) 落子
+  assert.strictEqual(Game.toggleNote(g, 0, 2, 1), false);   // 已填格不可加
+});
+
+test('setValue 落子后清除自身候选并从同 peer 候选移除该数字', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  Game.toggleNote(g, 0, 5, 7);                              // (0,5) 空格记候选 7
+  assert.strictEqual(g.notes[5] & Logic.bit(7), Logic.bit(7));
+  Game.setValue(g, 0, 2, 7);                                // (0,2) 落子 7（与 (0,5) 同列同行）
+  assert.strictEqual(g.notes[2], 0);                        // 自身候选清空
+  assert.strictEqual(g.notes[5] & Logic.bit(7), 0);          // peer 候选移除 7
+});
+
+test('autoCandidates：空格按盘面预填，给定/已填格清零', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  Game.autoCandidates(g);
+  // 给定格候选为 0
+  assert.strictEqual(g.notes[0], 0);
+  // 空格 (0,2) 候选应等于 computeCandidates
+  assert.strictEqual(g.notes[2], Logic.computeCandidates(g.values, 2));
+  // 已填用户格（先落子）候选为 0
+  Game.setValue(g, 0, 2, 4);
+  Game.autoCandidates(g);
+  assert.strictEqual(g.notes[2], 0);
+});
+
+// ---- #5 撤销 / 重做 ----
+test('setValue 记录动作；undo 回退值、redo 重放', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  assert.strictEqual(Game.canUndo(g), false);
+  Game.setValue(g, 0, 2, 4);
+  assert.strictEqual(g.values[2], 4);
+  assert.strictEqual(Game.canUndo(g), true);
+  Game.undo(g);
+  assert.strictEqual(g.values[2], 0);
+  assert.strictEqual(Game.canRedo(g), true);
+  Game.redo(g);
+  assert.strictEqual(g.values[2], 4);
+  assert.strictEqual(Game.canUndo(g), true);
+});
+
+test('新动作清空重做分支', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  Game.setValue(g, 0, 2, 4);
+  Game.setValue(g, 0, 3, 6);
+  Game.undo(g);                       // 回退第二个动作，future 有 1 项
+  assert.strictEqual(Game.canRedo(g), true);
+  Game.setValue(g, 0, 5, 8);          // 新动作 → future 清空
+  assert.strictEqual(Game.canRedo(g), false);
+  assert.strictEqual(g.values[5], 8);
+});
+
+test('undo/redo 还原候选（落子清候选可回退）', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  Game.toggleNote(g, 0, 5, 7);        // (0,5) 记 7
+  assert.strictEqual(g.notes[5] & Logic.bit(7), Logic.bit(7));
+  Game.setValue(g, 0, 2, 7);          // 落子 7 清 (0,5) 候选
+  assert.strictEqual(g.notes[5] & Logic.bit(7), 0);
+  Game.undo(g);                       // 回退落子 → (0,5) 候选恢复
+  assert.strictEqual(g.notes[5] & Logic.bit(7), Logic.bit(7));
+});
+
+test('undo 在空历史返回 false；redo 在空分支返回 false', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  assert.strictEqual(Game.undo(g), false);
+  assert.strictEqual(Game.redo(g), false);
+});
+
+// ---- #5 计时 / 暂停 ----
+test('tick 仅在 playing 且未暂停时累加', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  Game.tick(g); assert.strictEqual(g.time, 1);
+  Game.setPaused(g, true);
+  Game.tick(g); assert.strictEqual(g.time, 1);   // 暂停时不累加
+  Game.setPaused(g, false);
+  Game.tick(g); assert.strictEqual(g.time, 2);
+});
+
+test('胜利后 tick 不再累加', () => {
+  const g = Game.createGame({ givens: GIVENS, solution: SOLUTION });
+  for (let i = 0; i < 81; i++) if (!g.givenMask[i]) Game.setValue(g, (i/9|0), i%9, SOLUTION[i]);
+  assert.strictEqual(g.status, 'won');
+  Game.tick(g); assert.strictEqual(g.time, 0);
+});
+
+test('formatTime 输出 mm:ss', () => {
+  assert.strictEqual(Game.formatTime(0), '00:00');
+  assert.strictEqual(Game.formatTime(65), '01:05');
+  assert.strictEqual(Game.formatTime(600), '10:00');
 });
 
 console.log(`\n${passed} 个测试通过`);

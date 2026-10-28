@@ -102,4 +102,26 @@ test('moveSelection 边界 clamp', () => {
   assert.deepStrictEqual(L.moveSelection({r:4,c:4}, 'up'),   {r:3,c:4});
 });
 
+test('computeCandidates：已填格返回 0', () => {
+  const v = SOLUTION.slice();
+  assert.strictEqual(L.computeCandidates(v, 0), 0);
+});
+
+test('computeCandidates：空格返回同行列宫未出现数字的掩码', () => {
+  // 取 (0,2) 空格（SOLUTION 中=4）；其同行/列/宫已出现数字的集合
+  const v = SOLUTION.slice();
+  v[L.idx(0,2)] = 0;                              // 置空
+  const mask = L.computeCandidates(v, L.idx(0,2));
+  const digits = L.maskToDigits(mask);
+  assert.deepStrictEqual(digits, [4]);             // 仅 4 合法
+});
+
+test('computeCandidates：多候选（清空多数 peer）', () => {
+  const v = new Array(81).fill(0);
+  // 行0 已填 1..8，仅剩 (0,8) 空 → 候选仅 9
+  for (let c = 0; c < 8; c++) v[L.idx(0,c)] = c + 1;
+  const mask = L.computeCandidates(v, L.idx(0,8));
+  assert.deepStrictEqual(L.maskToDigits(mask), [9]);
+});
+
 console.log(`\n${passed} 个测试通过`);

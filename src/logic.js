@@ -81,6 +81,19 @@
 
   function cloneValues(values) { return values.slice(); }
 
+  // ---- 候选数推导 ----
+  // 返回第 i 格的候选位掩码：同行/列/宫内未出现的数字。已填值格返回 0。
+  function computeCandidates(values, i) {
+    if (values[i] !== 0) return 0;
+    let mask = 0x1FF; // 9 位全置 1
+    const peers = PEERS[i];
+    for (let k = 0; k < peers.length; k++) {
+      const v = values[peers[k]];
+      if (v !== 0) mask &= ~bit(v);
+    }
+    return mask;
+  }
+
   // ---- 选中移动（方向键，边界 clamp）----
   function moveSelection(sel, dir) {
     if (!sel) return sel;
@@ -99,6 +112,6 @@
     N, CELLS, idx, rowOf, colOf, boxOf,
     PEERS, UNITS,
     bit, digitsToMask, maskToDigits,
-    findConflicts, isComplete, isSolved, cloneValues, moveSelection,
+    findConflicts, isComplete, isSolved, cloneValues, moveSelection, computeCandidates,
   };
 });

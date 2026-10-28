@@ -114,6 +114,41 @@ html, body {
   min-height: 18px;
 }
 
+.timer {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--panel-2);
+  border-radius: 10px;
+  padding: 6px 10px;
+  min-width: 58px;
+  text-align: center;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  width: min(92vw, calc(92vh - 200px), 560px);
+  margin: 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.btn-toggle[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pause-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
 .gen-overlay {
   position: fixed;
   inset: 0;
@@ -178,6 +213,25 @@ html, body {
 
 .cell.conflict { color: var(--conflict); }
 .cell.conflict.selected { color: var(--conflict); }
+
+/* 候选数（笔记）小数字 3×3 网格 */
+.cell .notes-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.cell .notes-grid i {
+  font-style: normal;
+  font-size: clamp(7px, 1.7vw, 11px);
+  line-height: 1;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .pad {
   display: grid;
@@ -252,6 +306,7 @@ html, body {
           <option value="expert">专家</option>
         </select>
       </label>
+      <span id="timer" class="timer" aria-live="off">00:00</span>
       <button id="btn-new" class="btn" type="button">新局</button>
       <button id="btn-reset" class="btn btn-ghost" type="button">重置</button>
     </div>
@@ -261,12 +316,22 @@ html, body {
 
   <main class="play">
     <div id="board" class="board" role="grid" aria-label="数独棋盘"></div>
+
+    <div class="toolbar" role="group" aria-label="对局工具">
+      <button id="btn-note" class="btn btn-toggle" type="button" aria-pressed="false">笔记</button>
+      <button id="btn-autonote" class="btn btn-ghost" type="button">自动候选</button>
+      <button id="btn-undo" class="btn btn-ghost" type="button">撤销</button>
+      <button id="btn-redo" class="btn btn-ghost" type="button">重做</button>
+      <button id="btn-pause" class="btn btn-ghost" type="button">暂停</button>
+    </div>
+
     <div id="pad" class="pad" role="group" aria-label="数字盘"></div>
   </main>
 
   <p class="hint">
     点格或方向键选中，数字键 / 数字盘填数，Backspace 擦除。<br>
-    Given 格不可改；与同行、同列、同宫重复会即时标红（不阻断）。填满唯一解即胜利。
+    笔记模式（N）下数字键标记候选；给定格不可改；与同行、同列、同宫重复会即时标红（不阻断）。<br>
+    撤销 Ctrl/⌘+Z，重做 Ctrl/⌘+Shift+Z，暂停 P。
   </p>
 </div>
 
@@ -280,6 +345,13 @@ html, body {
 
 <div id="generating" class="gen-overlay" hidden>
   <div class="gen-card">生成中…</div>
+</div>
+
+<div id="pause" class="gen-overlay" hidden>
+  <div class="gen-card">
+    <div class="pause-title">已暂停</div>
+    <button id="btn-resume" class="btn" type="button">继续</button>
+  </div>
 </div>
 
 <script>
@@ -366,6 +438,19 @@ html, body {
 
   function cloneValues(values) { return values.slice(); }
 
+  // ---- 候选数推导 ----
+  // 返回第 i 格的候选位掩码：同行/列/宫内未出现的数字。已填值格返回 0。
+  function computeCandidates(values, i) {
+    if (values[i] !== 0) return 0;
+    let mask = 0x1FF; // 9 位全置 1
+    const peers = PEERS[i];
+    for (let k = 0; k < peers.length; k++) {
+      const v = values[peers[k]];
+      if (v !== 0) mask &= ~bit(v);
+    }
+    return mask;
+  }
+
   // ---- 选中移动（方向键，边界 clamp）----
   function moveSelection(sel, dir) {
     if (!sel) return sel;
@@ -384,7 +469,7 @@ html, body {
     N, CELLS, idx, rowOf, colOf, boxOf,
     PEERS, UNITS,
     bit, digitsToMask, maskToDigits,
-    findConflicts, isComplete, isSolved, cloneValues, moveSelection,
+    findConflicts, isComplete, isSolved, cloneValues, moveSelection, computeCandidates,
   };
 });
 
@@ -910,6 +995,10 @@ html, body {
  * 对局状态机（GameState + Controller 的纯逻辑部分，无 DOM）。
  * 依赖 SudokuLogic（node 下 require，浏览器下取 window.SudokuLogic）。
  * 该文件会被 build.js 内联进最终单文件 index.html。
+ *
+ * 本文件覆盖：
+ *  - #4 候选数：notes(Uint16Array) / mode('digit'|'note') / toggleNote / autoCandidates
+ *  - #5 撤销重做计时暂停：history/future 增量栈 / undo / redo / time / paused / tick / setPaused
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
@@ -920,6 +1009,8 @@ html, body {
 })(typeof self !== 'undefined' ? self : this, function (Logic, Generator) {
   'use strict';
 
+  const bit = Logic.bit;
+
   // puzzle: { givens, solution, difficulty?, grade?, approximate? }
   function createGame(puzzle) {
     const givens = Array.from(puzzle.givens);
@@ -928,12 +1019,21 @@ html, body {
     const givenMask = givens.map(v => (v !== 0 ? 1 : 0));
     const state = {
       puzzle, givens, solution, values, givenMask,
+      notes: new Uint16Array(81),                  // 每格候选位掩码（#4）
+      mode: 'digit',                               // 'digit' | 'note'（#4）
       difficulty: puzzle.difficulty || 'medium',
       grade: puzzle.grade != null ? puzzle.grade : 0,
       approximate: !!puzzle.approximate,
+      givensCount: givens.filter(v => v !== 0).length,
       selected: null,                              // {r,c}
       status: 'playing',                           // 'playing' | 'won'
       conflicts: new Set(),
+      history: [],                                 // 增量动作栈（#5）
+      future: [],                                  // 重做分支（#5）
+      time: 0,                                     // 已用秒数（#5）
+      paused: false,                               // 暂停态（#5）
+      hintsUsed: 0,
+      undosUsed: 0,
     };
     recompute(state);
     return state;
@@ -950,24 +1050,136 @@ html, body {
     return state;
   }
 
-  // 填数 d（1..9）。Given 格或非法 d 返回 false 且不改动；成功返回 true。
+  // ---- 动作快照 / 重放（#5 增量撤销）----
+  // 仅记录受影响的格子 {i, v, n}（值 + 候选），非整盘快照。
+  function snapshot(state, idxs) {
+    const out = new Array(idxs.length);
+    for (let k = 0; k < idxs.length; k++) {
+      const i = idxs[k];
+      out[k] = { i, v: state.values[i], n: state.notes[i] };
+    }
+    return out;
+  }
+  function applySnapshot(state, snap) {
+    for (let k = 0; k < snap.length; k++) {
+      const s = snap[k];
+      state.values[s.i] = s.v;
+      state.notes[s.i] = s.n;
+    }
+  }
+  function pushHistory(state, before, after, type) {
+    state.history.push({ before, after, type });
+    state.future.length = 0;                       // 新动作清空重做分支
+  }
+
+  // 填数 d（1..9）。Given 格或非法 d 返回 false 且不改动；成功记录动作并返回 true。
   function setValue(state, r, c, d) {
     const i = Logic.idx(r, c);
     if (state.givenMask[i]) return false;          // Given 锁
     if (!Number.isInteger(d) || d < 1 || d > 9) return false;
+    const affected = [i].concat(Logic.PEERS[i]);   // 自身 + 20 个 peer（候选清理）
+    const before = snapshot(state, affected);
     state.values[i] = d;
+    state.notes[i] = 0;                            // 落子清空格内候选
+    const bd = bit(d);
+    for (let k = 0; k < Logic.PEERS[i].length; k++) {
+      const p = Logic.PEERS[i][k];
+      state.notes[p] &= ~bd;                       // 同行/列/宫候选移除该数字
+    }
+    const after = snapshot(state, affected);
+    pushHistory(state, before, after, 'set');
     state.selected = { r, c };
     recompute(state);
     return true;
   }
 
-  // 擦除。Given 格返回 false。
+  // 擦除。Given 格返回 false；保留手动候选（不自动重建）。
   function erase(state, r, c) {
     const i = Logic.idx(r, c);
     if (state.givenMask[i]) return false;
+    if (state.values[i] === 0) return false;       // 本就为空，无动作
+    const before = snapshot(state, [i]);
     state.values[i] = 0;
+    const after = snapshot(state, [i]);
+    pushHistory(state, before, after, 'erase');
     recompute(state);
     return true;
+  }
+
+  // 笔记模式：在单格标记/取消一个候选。仅非给定且为空格可用；返回 true/false。
+  function toggleNote(state, r, c, d) {
+    const i = Logic.idx(r, c);
+    if (state.givenMask[i]) return false;          // 给定格不可加候选
+    if (state.values[i] !== 0) return false;       // 已落子格不可加候选
+    if (!Number.isInteger(d) || d < 1 || d > 9) return false;
+    const before = snapshot(state, [i]);
+    state.notes[i] ^= bit(d);                       // 翻转该候选位
+    const after = snapshot(state, [i]);
+    pushHistory(state, before, after, 'note');
+    return true;
+  }
+
+  // 自动候选：按当前盘面为所有空格重算并预填候选；给定/已填格候选清零。记录为单动作（可整体撤销）。
+  function autoCandidates(state) {
+    const idxs = [];
+    for (let i = 0; i < 81; i++) idxs.push(i);
+    const before = snapshot(state, idxs);
+    for (let i = 0; i < 81; i++) {
+      if (state.givenMask[i] || state.values[i] !== 0) { state.notes[i] = 0; continue; }
+      state.notes[i] = Logic.computeCandidates(state.values, i);
+    }
+    const after = snapshot(state, idxs);
+    pushHistory(state, before, after, 'auto');
+    return true;
+  }
+
+  // 清空全部候选（不记录历史，纯视图操作；如需可撤销可改为记录动作）。
+  function clearNotes(state) {
+    for (let i = 0; i < 81; i++) {
+      if (!state.givenMask[i] && state.values[i] === 0) state.notes[i] = 0;
+    }
+    return true;
+  }
+
+  function setMode(state, mode) {
+    state.mode = mode === 'note' ? 'note' : 'digit';
+    return state.mode;
+  }
+  function toggleMode(state) {
+    state.mode = state.mode === 'note' ? 'digit' : 'note';
+    return state.mode;
+  }
+
+  // ---- 撤销 / 重做（#5）----
+  function undo(state) {
+    if (!state.history.length) return false;
+    const a = state.history.pop();
+    applySnapshot(state, a.before);
+    state.future.push(a);
+    state.undosUsed++;
+    recompute(state);
+    return true;
+  }
+  function redo(state) {
+    if (!state.future.length) return false;
+    const a = state.future.pop();
+    applySnapshot(state, a.after);
+    state.history.push(a);
+    recompute(state);
+    return true;
+  }
+  function canUndo(state) { return state.history.length > 0; }
+  function canRedo(state) { return state.future.length > 0; }
+
+  // ---- 计时 / 暂停（#5）----
+  // 每秒调用一次；仅在游玩中且未暂停时累加。
+  function tick(state) {
+    if (state.status === 'playing' && !state.paused) state.time++;
+    return state.time;
+  }
+  function setPaused(state, paused) {
+    state.paused = !!paused;
+    return state.paused;
   }
 
   // 根据当前 values 重算冲突与胜利状态。
@@ -977,7 +1189,22 @@ html, body {
     return state;
   }
 
-  return { createGame, newGame, select, setValue, erase, recompute };
+  // 格式化为 mm:ss
+  function formatTime(sec) {
+    const s = Math.max(0, sec | 0);
+    const mm = (s / 60 | 0);
+    const ss = s % 60;
+    return (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+  }
+
+  return {
+    createGame, newGame, select,
+    setValue, erase, toggleNote, autoCandidates, clearNotes,
+    setMode, toggleMode,
+    undo, redo, canUndo, canRedo,
+    tick, setPaused,
+    recompute, formatTime,
+  };
 });
 
 'use strict';
@@ -985,6 +1212,10 @@ html, body {
  * UI 层 + 控制器事件绑定（依赖 SudokuLogic / SudokuGame / SudokuGenerator / SudokuGrader）。
  * node 下（烟雾测试）通过 global 注入 document/window；浏览器下取 window。
  * 该文件会被 build.js 内联进最终单文件 index.html。
+ *
+ * 本文件覆盖：
+ *  - #4 候选数：笔记模式开关 + 自动候选 + 小数字网格渲染 + 键盘 N
+ *  - #5 撤销/重做 + 计时/暂停：按钮 + 计时显示 + 暂停遮罩拦截输入 + 键盘快捷键
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
@@ -996,6 +1227,8 @@ html, body {
   'use strict';
 
   const DIFF_LABELS = { easy: '简单', medium: '中等', hard: '困难', expert: '专家' };
+  // 仅在浏览器（非 node 测试环境）启动计时器，避免测试进程因 setInterval 挂起。
+  const IS_NODE = (typeof process !== 'undefined' && process.versions && process.versions.node);
 
   let state = null;
   let cellEls = [];
@@ -1005,6 +1238,13 @@ html, body {
   let statusEl = null;
   let genEl = null;
   let diffSel = null;
+  let timerEl = null;
+  let btnNote = null;
+  let btnAutoNote = null;
+  let btnUndo = null;
+  let btnRedo = null;
+  let btnPause = null;
+  let pauseEl = null;
 
   function currentDifficulty() {
     return diffSel && diffSel.value ? diffSel.value : 'medium';
@@ -1017,6 +1257,13 @@ html, body {
     statusEl = doc.getElementById('status');
     genEl = doc.getElementById('generating');
     diffSel = doc.getElementById('difficulty');
+    timerEl = doc.getElementById('timer');
+    btnNote = doc.getElementById('btn-note');
+    btnAutoNote = doc.getElementById('btn-autonote');
+    btnUndo = doc.getElementById('btn-undo');
+    btnRedo = doc.getElementById('btn-redo');
+    btnPause = doc.getElementById('btn-pause');
+    pauseEl = doc.getElementById('pause');
 
     state = Game.newGame(currentDifficulty());
 
@@ -1025,6 +1272,14 @@ html, body {
     wireToolbar();
     wireKeyboard();
     render();
+
+    if (!IS_NODE) {
+      setInterval(() => {
+        if (!state) return;
+        Game.tick(state);
+        updateTimer();
+      }, 1000);
+    }
   }
 
   function buildBoard() {
@@ -1076,6 +1331,13 @@ html, body {
     if (diffSel) diffSel.addEventListener('change', () => { /* 下次点「新局」生效，当前局不变 */ });
     const winReset = doc.getElementById('btn-win-reset');
     if (winReset) winReset.addEventListener('click', onNewGame);
+    if (btnNote) btnNote.addEventListener('click', onNoteToggle);
+    if (btnAutoNote) btnAutoNote.addEventListener('click', onAutoNote);
+    if (btnUndo) btnUndo.addEventListener('click', onUndo);
+    if (btnRedo) btnRedo.addEventListener('click', onRedo);
+    if (btnPause) btnPause.addEventListener('click', togglePause);
+    const resume = doc.getElementById('btn-resume');
+    if (resume) resume.addEventListener('click', () => setPaused(false));
   }
 
   function wireKeyboard() {
@@ -1083,26 +1345,75 @@ html, body {
   }
 
   function onCellClick(e) {
+    if (state.paused) return;
     const t = e.currentTarget;
     Game.select(state, Number(t.dataset.r), Number(t.dataset.c));
     render();
   }
 
   function onPadClick(e) {
-    if (!state.selected) return;
+    if (state.paused || !state.selected) return;
     const d = Number(e.currentTarget.dataset.d);
-    Game.setValue(state, state.selected.r, state.selected.c, d);
+    if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, d);
+    else Game.setValue(state, state.selected.r, state.selected.c, d);
     render();
   }
 
   function onEraseClick() {
-    if (!state.selected) return;
+    if (state.paused || !state.selected) return;
     Game.erase(state, state.selected.r, state.selected.c);
     render();
   }
 
+  function onNoteToggle() {
+    if (state.paused) return;
+    Game.toggleMode(state);
+    render();
+  }
+
+  function onAutoNote() {
+    if (state.paused) return;
+    Game.autoCandidates(state);
+    render();
+  }
+
+  function onUndo() {
+    if (state.paused) return;
+    if (Game.undo(state)) render();
+  }
+
+  function onRedo() {
+    if (state.paused) return;
+    if (Game.redo(state)) render();
+  }
+
+  function setPaused(paused) {
+    if (!state) return;
+    Game.setPaused(state, paused);
+    if (pauseEl) pauseEl.hidden = !paused;
+  }
+
+  function togglePause() {
+    if (!state) return;
+    setPaused(!state.paused);
+  }
+
   function onKeydown(e) {
     const k = e.key;
+    // 暂停/恢复键始终可用
+    if (k === 'p' || k === 'P') { togglePause(); e.preventDefault(); return; }
+    if (k === 'Escape') { if (state && state.paused) { togglePause(); e.preventDefault(); } return; }
+    if (state && state.paused) return; // 暂停时拦截其余输入
+
+    if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'Z')) {
+      if (e.shiftKey) Game.redo(state); else Game.undo(state);
+      render(); e.preventDefault(); return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) {
+      Game.redo(state); render(); e.preventDefault(); return;
+    }
+    if (k === 'n' || k === 'N') { Game.toggleMode(state); render(); e.preventDefault(); return; }
+
     if (k === 'ArrowUp' || k === 'ArrowDown' || k === 'ArrowLeft' || k === 'ArrowRight') {
       if (!state.selected) state.selected = { r: 0, c: 0 };
       const dir = k === 'ArrowUp' ? 'up' : k === 'ArrowDown' ? 'down'
@@ -1113,7 +1424,11 @@ html, body {
       return;
     }
     if (k >= '1' && k <= '9') {
-      if (state.selected) { Game.setValue(state, state.selected.r, state.selected.c, Number(k)); render(); }
+      if (state.selected) {
+        if (state.mode === 'note') Game.toggleNote(state, state.selected.r, state.selected.c, Number(k));
+        else Game.setValue(state, state.selected.r, state.selected.c, Number(k));
+        render();
+      }
       e.preventDefault();
       return;
     }
@@ -1125,6 +1440,7 @@ html, body {
 
   // 新局：先显示「生成中」，让浏览器有机会绘制，再异步生成（避免白屏）。
   function onNewGame() {
+    if (state.paused) return;
     const diff = currentDifficulty();
     if (genEl) genEl.hidden = false;
     if (statusEl) statusEl.textContent = '生成中…';
@@ -1137,9 +1453,21 @@ html, body {
   }
 
   function resetGame() {
+    if (state.paused) return;
     // 重置当前谜题（清空玩家填入，保留 givens）
     state = Game.createGame(state.puzzle);
     render();
+  }
+
+  function notesMarkup(mask) {
+    let h = '<span class="notes-grid">';
+    for (let d = 1; d <= 9; d++) h += '<i>' + ((mask & Logic.bit(d)) ? d : '') + '</i>';
+    h += '</span>';
+    return h;
+  }
+
+  function updateTimer() {
+    if (timerEl) timerEl.textContent = Game.formatTime(state ? state.time : 0);
   }
 
   function render() {
@@ -1151,7 +1479,19 @@ html, body {
     for (let i = 0; i < 81; i++) {
       const el = cellEls[i];
       const v = state.values[i];
-      el.textContent = v ? String(v) : '';
+
+      if (v) {
+        el.textContent = String(v);
+        el.classList.remove('notes');
+      } else if (state.notes[i]) {
+        el.textContent = '';
+        el.classList.add('notes');
+        el.innerHTML = notesMarkup(state.notes[i]);
+      } else {
+        el.textContent = '';
+        el.classList.remove('notes');
+        el.innerHTML = '';
+      }
 
       const given = state.givenMask[i] === 1;
       el.classList.toggle('given', given);
@@ -1179,8 +1519,16 @@ html, body {
       if (state.grade > 0) t += ' · 技巧层级 T' + state.grade;
       if (state.approximate) t += '（近似）';
       t += ' · 提示数 ' + state.givensCount;
+      if (state.mode === 'note') t += ' · 笔记模式';
       statusEl.textContent = t;
     }
+
+    updateTimer();
+
+    if (btnNote) btnNote.setAttribute('aria-pressed', state.mode === 'note' ? 'true' : 'false');
+    if (btnUndo) btnUndo.disabled = !Game.canUndo(state);
+    if (btnRedo) btnRedo.disabled = !Game.canRedo(state);
+    if (btnPause) btnPause.textContent = state.paused ? '继续' : '暂停';
   }
 
   return { bootstrap, _getState: () => state, _cellEls: () => cellEls };
