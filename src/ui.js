@@ -1,55 +1,42 @@
 'use strict';
 /**
- * UI 层 + 控制器事件绑定（依赖 SudokuLogic / SudokuGame）。
+ * UI 层 + 控制器事件绑定（依赖 SudokuLogic / SudokuGame / SudokuGenerator / SudokuGrader）。
  * node 下（烟雾测试）通过 global 注入 document/window；浏览器下取 window。
  * 该文件会被 build.js 内联进最终单文件 index.html。
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./logic.js'), require('./game.js'), global);
+    module.exports = factory(require('./logic.js'), require('./game.js'), require('./generator.js'), require('./grader.js'), global);
   } else {
-    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root);
+    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root.SudokuGenerator, root.SudokuGrader, root);
   }
-})(typeof self !== 'undefined' ? self : this, function (Logic, Game, docRoot) {
+})(typeof self !== 'undefined' ? self : this, function (Logic, Game, Generator, Grader, docRoot) {
   'use strict';
 
-  // #1 硬编码谜题（Wikipedia 经典样例，唯一解）—— 后续切片替换为生成器
-  const PUZZLE = {
-    givens: [
-      5,3,0, 0,7,0, 0,0,0,
-      6,0,0, 1,9,5, 0,0,0,
-      0,9,8, 0,0,0, 0,6,0,
-      8,0,0, 0,6,0, 0,0,3,
-      4,0,0, 8,0,3, 0,0,1,
-      7,0,0, 0,2,0, 0,0,6,
-      0,6,0, 0,0,0, 2,8,0,
-      0,0,0, 4,1,9, 0,0,5,
-      0,0,0, 0,8,0, 0,7,9,
-    ],
-    solution: [
-      5,3,4,6,7,8,9,1,2,
-      6,7,2,1,9,5,3,4,8,
-      1,9,8,3,4,2,5,6,7,
-      8,5,9,7,6,1,4,2,3,
-      4,2,6,8,5,3,7,9,1,
-      7,1,3,9,2,4,8,5,6,
-      9,6,1,5,3,7,2,8,4,
-      2,8,7,4,1,9,6,3,5,
-      3,4,5,2,8,6,1,7,9,
-    ],
-  };
+  const DIFF_LABELS = { easy: '简单', medium: '中等', hard: '困难', expert: '专家' };
 
   let state = null;
   let cellEls = [];
   let doc = null;
   let boardEl = null;
   let winEl = null;
+  let statusEl = null;
+  let genEl = null;
+  let diffSel = null;
+
+  function currentDifficulty() {
+    return diffSel && diffSel.value ? diffSel.value : 'medium';
+  }
 
   function bootstrap() {
     doc = docRoot.document;
     boardEl = doc.getElementById('board');
     winEl = doc.getElementById('win');
-    state = Game.createGame(PUZZLE);
+    statusEl = doc.getElementById('status');
+    genEl = doc.getElementById('generating');
+    diffSel = doc.getElementById('difficulty');
+
+    state = Game.newGame(currentDifficulty());
 
     buildBoard();
     buildPad();
@@ -102,8 +89,11 @@
   function wireToolbar() {
     const reset = doc.getElementById('btn-reset');
     if (reset) reset.addEventListener('click', resetGame);
+    const newBtn = doc.getElementById('btn-new');
+    if (newBtn) newBtn.addEventListener('click', onNewGame);
+    if (diffSel) diffSel.addEventListener('change', () => { /* 下次点「新局」生效，当前局不变 */ });
     const winReset = doc.getElementById('btn-win-reset');
-    if (winReset) winReset.addEventListener('click', resetGame);
+    if (winReset) winReset.addEventListener('click', onNewGame);
   }
 
   function wireKeyboard() {
@@ -151,8 +141,22 @@
     }
   }
 
+  // 新局：先显示「生成中」，让浏览器有机会绘制，再异步生成（避免白屏）。
+  function onNewGame() {
+    const diff = currentDifficulty();
+    if (genEl) genEl.hidden = false;
+    if (statusEl) statusEl.textContent = '生成中…';
+    // 让「生成中」先渲染，再跑同步生成
+    setTimeout(() => {
+      state = Game.newGame(diff);
+      if (genEl) genEl.hidden = true;
+      render();
+    }, 0);
+  }
+
   function resetGame() {
-    state = Game.createGame(PUZZLE);
+    // 重置当前谜题（清空玩家填入，保留 givens）
+    state = Game.createGame(state.puzzle);
     render();
   }
 
@@ -176,7 +180,25 @@
       el.classList.toggle('same', selVal !== 0 && i !== selIdx && v === selVal);
     }
 
-    if (winEl) winEl.hidden = state.status !== 'won';
+    if (winEl) {
+      winEl.hidden = state.status !== 'won';
+      if (state.status === 'won') {
+        const wt = doc.getElementById('win-text');
+        if (wt) {
+          const lbl = DIFF_LABELS[state.difficulty] || state.difficulty;
+          wt.textContent = '棋盘已填满且唯一解正确。难度：' + lbl;
+        }
+      }
+    }
+
+    if (statusEl) {
+      const lbl = DIFF_LABELS[state.difficulty] || state.difficulty;
+      let t = '难度：' + lbl;
+      if (state.grade > 0) t += ' · 技巧层级 T' + state.grade;
+      if (state.approximate) t += '（近似）';
+      t += ' · 提示数 ' + state.givensCount;
+      statusEl.textContent = t;
+    }
   }
 
   return { bootstrap, _getState: () => state, _cellEls: () => cellEls };

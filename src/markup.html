@@ -2,9 +2,21 @@
   <header class="topbar">
     <h1 class="title">数独</h1>
     <div class="actions">
-      <button id="btn-reset" class="btn" type="button">重置本局</button>
+      <label class="diff">
+        难度
+        <select id="difficulty" class="select" aria-label="难度选择">
+          <option value="easy">简单</option>
+          <option value="medium" selected>中等</option>
+          <option value="hard">困难</option>
+          <option value="expert">专家</option>
+        </select>
+      </label>
+      <button id="btn-new" class="btn" type="button">新局</button>
+      <button id="btn-reset" class="btn btn-ghost" type="button">重置</button>
     </div>
   </header>
+
+  <p id="status" class="status" aria-live="polite">生成中…</p>
 
   <main class="play">
     <div id="board" class="board" role="grid" aria-label="数独棋盘"></div>
@@ -13,14 +25,18 @@
 
   <p class="hint">
     点格或方向键选中，数字键 / 数字盘填数，Backspace 擦除。<br>
-    Given 格不可改；与同行、同列、同宫重复会即时标红（不阻断）。填满且无冲突即胜利。
+    Given 格不可改；与同行、同列、同宫重复会即时标红（不阻断）。填满唯一解即胜利。
   </p>
 </div>
 
 <div id="win" class="win-overlay" hidden>
   <div class="win-card">
     <h2>完成 🎉</h2>
-    <p id="win-text">棋盘已填满且无冲突。</p>
+    <p id="win-text">棋盘已填满且唯一解正确。</p>
     <button id="btn-win-reset" class="btn" type="button">再来一局</button>
   </div>
+</div>
+
+<div id="generating" class="gen-overlay" hidden>
+  <div class="gen-card">生成中…</div>
 </div>

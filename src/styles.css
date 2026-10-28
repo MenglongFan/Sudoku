@@ -64,7 +64,25 @@ html, body {
   gap: 12px;
 }
 .title { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: 0.5px; }
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.diff {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.select {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
 
 .btn {
   appearance: none;
@@ -79,6 +97,34 @@ html, body {
 }
 .btn:hover { background: var(--panel-2); }
 .btn:active { transform: translateY(1px); }
+.btn-ghost { background: transparent; border-color: var(--line); color: var(--muted); }
+
+.status {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 18px;
+}
+
+.gen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 20, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+.gen-overlay[hidden] { display: none; }
+.gen-card {
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 14px;
+  padding: 18px 28px;
+  font-size: 15px;
+  box-shadow: var(--shadow);
+}
 
 .board {
   display: grid;

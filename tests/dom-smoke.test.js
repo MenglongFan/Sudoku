@@ -61,28 +61,38 @@ test('胜利遮罩初始隐藏', () => {
 test('点格选中 → 点数字盘填数，状态与渲染一致', () => {
   const board = elementsById['board'];
   const pad = elementsById['pad'];
-  const cell2 = board.children[2];           // idx 2 = (0,2)
-  assert.strictEqual(cell2.dataset.idx, '2');
-  fire(cell2, 'click');                        // 选中 (0,2)
+  const st = UI._getState();
+  // 找一个空格（非给定）来填，避免依赖具体生成盘面
+  let ei = -1;
+  for (let i = 0; i < 81; i++) { if (st.givenMask[i] === 0 && st.values[i] === 0) { ei = i; break; } }
+  assert.ok(ei >= 0, '应存在可填空格');
+  const cell = board.children[ei];
+  assert.strictEqual(cell.dataset.idx, String(ei));
+  fire(cell, 'click');                          // 选中
   const pad4 = pad.children[3];                // 数字 4
   assert.strictEqual(pad4.dataset.d, '4');
-  fire(pad4, 'click');                         // 填入 4
+  fire(pad4, 'click');                          // 填入 4
 
-  const st = UI._getState();
-  assert.strictEqual(st.values[2], 4, '状态值应更新为 4');
-  assert.strictEqual(cell2.textContent, '4', '单元格文本应渲染为 4');
-  assert.ok(cell2.classList.contains('user'), '用户填入格应有 user 类');
-  assert.ok(cell2.classList.contains('selected'), '刚选中的格应有 selected 类');
+  const st2 = UI._getState();
+  assert.strictEqual(st2.values[ei], 4, '状态值应更新为 4');
+  assert.strictEqual(cell.textContent, '4', '单元格文本应渲染为 4');
+  assert.ok(cell.classList.contains('user'), '用户填入格应有 user 类');
+  assert.ok(cell.classList.contains('selected'), '刚选中的格应有 selected 类');
 });
 
 test('Given 格点击只选中不填（给定值保留）', () => {
   const board = elementsById['board'];
-  const cell0 = board.children[0];             // idx 0 = (0,0)，given=5
-  fire(cell0, 'click');
-  const pad9 = board.parentNode;               // 无关，仅占位
-  // 选中后尝试用数字盘改值：given 应拒绝
   const st = UI._getState();
-  assert.strictEqual(st.values[0], 5, 'Given 格值保持 5');
+  let gi = -1;
+  for (let i = 0; i < 81; i++) { if (st.givenMask[i] === 1) { gi = i; break; } }
+  assert.ok(gi >= 0, '应存在给定格');
+  const cell = board.children[gi];
+  const before = st.values[gi];
+  fire(cell, 'click');                          // 选中给定格
+  const pad4 = elementsById['pad'].children[3]; // 数字 4
+  fire(pad4, 'click');                          // 尝试改值
+  const st2 = UI._getState();
+  assert.strictEqual(st2.values[gi], before, 'Given 格值保持');
 });
 
 console.log(`\n${passed} 个测试通过`);

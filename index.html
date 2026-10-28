@@ -71,7 +71,25 @@ html, body {
   gap: 12px;
 }
 .title { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: 0.5px; }
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.diff {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.select {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
 
 .btn {
   appearance: none;
@@ -86,6 +104,34 @@ html, body {
 }
 .btn:hover { background: var(--panel-2); }
 .btn:active { transform: translateY(1px); }
+.btn-ghost { background: transparent; border-color: var(--line); color: var(--muted); }
+
+.status {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 18px;
+}
+
+.gen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 20, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+.gen-overlay[hidden] { display: none; }
+.gen-card {
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 14px;
+  padding: 18px 28px;
+  font-size: 15px;
+  box-shadow: var(--shadow);
+}
 
 .board {
   display: grid;
@@ -197,9 +243,21 @@ html, body {
   <header class="topbar">
     <h1 class="title">数独</h1>
     <div class="actions">
-      <button id="btn-reset" class="btn" type="button">重置本局</button>
+      <label class="diff">
+        难度
+        <select id="difficulty" class="select" aria-label="难度选择">
+          <option value="easy">简单</option>
+          <option value="medium" selected>中等</option>
+          <option value="hard">困难</option>
+          <option value="expert">专家</option>
+        </select>
+      </label>
+      <button id="btn-new" class="btn" type="button">新局</button>
+      <button id="btn-reset" class="btn btn-ghost" type="button">重置</button>
     </div>
   </header>
+
+  <p id="status" class="status" aria-live="polite">生成中…</p>
 
   <main class="play">
     <div id="board" class="board" role="grid" aria-label="数独棋盘"></div>
@@ -208,16 +266,20 @@ html, body {
 
   <p class="hint">
     点格或方向键选中，数字键 / 数字盘填数，Backspace 擦除。<br>
-    Given 格不可改；与同行、同列、同宫重复会即时标红（不阻断）。填满且无冲突即胜利。
+    Given 格不可改；与同行、同列、同宫重复会即时标红（不阻断）。填满唯一解即胜利。
   </p>
 </div>
 
 <div id="win" class="win-overlay" hidden>
   <div class="win-card">
     <h2>完成 🎉</h2>
-    <p id="win-text">棋盘已填满且无冲突。</p>
+    <p id="win-text">棋盘已填满且唯一解正确。</p>
     <button id="btn-win-reset" class="btn" type="button">再来一局</button>
   </div>
+</div>
+
+<div id="generating" class="gen-overlay" hidden>
+  <div class="gen-card">生成中…</div>
 </div>
 
 <script>
@@ -328,20 +390,537 @@ html, body {
 
 'use strict';
 /**
+ * 回溯求解器（纯函数，无 DOM、无副作用，可在 node 下被测试）。
+ * 依赖 SudokuLogic（node 下 require，浏览器下取 window.SudokuLogic）。
+ * 该文件会被 build.js 内联进最终单文件 index.html。
+ *
+ * 暴露：
+ *   solve(values)          -> 返回一组解（数组，0=空）或 null（无解）
+ *   countSolutions(values, limit=2) -> 解的数量，数到 limit 即停（仅关心唯一性时用 2）
+ */
+(function (root, factory) {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = factory(require('./logic.js'));
+  } else {
+    root.SudokuSolver = factory(root.SudokuLogic);
+  }
+})(typeof self !== 'undefined' ? self : this, function (Logic) {
+  'use strict';
+
+  const N = 81;
+
+  function popcount(m) { let c = 0; while (m) { c += m & 1; m >>>= 1; } return c; }
+
+  // 在 grid（0=空）中，i 格当前能放的数字位掩码（9 位）。
+  function candidatesOf(grid, i) {
+    let used = 0;
+    const peers = Logic.PEERS[i];
+    for (let k = 0; k < peers.length; k++) {
+      const v = grid[peers[k]];
+      if (v !== 0) used |= (1 << (v - 1));
+    }
+    return (~used) & 0x1FF;
+  }
+
+  // 用最小剩余候选（MRV）选空格；返回 {i, mask} 或 null（已填满）；mask=0 表示死路。
+  function pickCell(grid) {
+    let best = -1, bestMask = 0, bestCount = 10;
+    for (let i = 0; i < N; i++) {
+      if (grid[i] !== 0) continue;
+      const mask = candidatesOf(grid, i);
+      const cnt = popcount(mask);
+      if (cnt === 0) return { i, mask: 0 };
+      if (cnt < bestCount) { bestCount = cnt; best = i; bestMask = mask; if (cnt === 1) break; }
+    }
+    return best === -1 ? null : { i: best, mask: bestMask };
+  }
+
+  // 回溯求解：返回解数组或 null。
+  function solve(values) {
+    const grid = values.slice();
+    function rec() {
+      const pick = pickCell(grid);
+      if (pick === null) return true;   // 填满即解
+      if (pick.mask === 0) return false; // 死路
+      const mask = pick.mask;
+      for (let d = 1; d <= 9; d++) {
+        if (mask & (1 << (d - 1))) {
+          grid[pick.i] = d;
+          if (rec()) return true;
+          grid[pick.i] = 0;
+        }
+      }
+      return false;
+    }
+    return rec() ? grid : null;
+  }
+
+  // 计数解的数量，数到 limit（默认 2）即停。用于唯一性判定。
+  function countSolutions(values, limit) {
+    if (limit === undefined) limit = 2;
+    const grid = values.slice();
+    let count = 0;
+    function rec() {
+      const pick = pickCell(grid);
+      if (pick === null) { count++; return; }
+      if (pick.mask === 0) return;
+      const mask = pick.mask;
+      for (let d = 1; d <= 9; d++) {
+        if (mask & (1 << (d - 1))) {
+          grid[pick.i] = d;
+          rec();
+          grid[pick.i] = 0;
+          if (count >= limit) return;
+        }
+      }
+    }
+    rec();
+    return count;
+  }
+
+  return { solve, countSolutions, _internal: { popcount, candidatesOf } };
+});
+
+'use strict';
+/**
+ * 逻辑技巧分级器（纯函数，无 DOM、无副作用，可在 node 下被测试）。
+ * 依赖 SudokuLogic / SudokuSolver。
+ * 该文件会被 build.js 内联进最终单文件 index.html。
+ *
+ * 思路：在玩家/生成盘面（仅 givens）上只使用逻辑技巧推进，记录用到的最高层级；
+ * 始终优先应用最低可用层，故最高层是"必需"的，难度标签诚实。
+ *
+ *   T1 唯一候选（Naked single）
+ *   T2 隐藏单（Hidden single）
+ *   T3 区块指向/声明（Locked candidates）
+ *   T4 数对/三数组（Naked/Hidden pair·triple）
+ *   T5 X-Wing
+ *
+ * grade(puzzle)     -> 用到的最高层级 1..5；无法不猜解开则返回 0（弃题重生成）
+ * solveLogically(v) -> { solution, tier } 或 null（需要猜测/卡死）
+ */
+(function (root, factory) {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = factory(require('./logic.js'), require('./solver.js'));
+  } else {
+    root.SudokuGrader = factory(root.SudokuLogic, root.SudokuSolver);
+  }
+})(typeof self !== 'undefined' ? self : this, function (Logic, Solver) {
+  'use strict';
+
+  const N = 81;
+  const FULL = 0x1FF;
+
+  function popcount(m) { let c = 0; while (m) { c += m & 1; m >>>= 1; } return c; }
+  // mask 恰为单比特时返回对应数字（1..9）
+  function firstDigit(mask) { return 31 - Math.clz32(mask) + 1; }
+
+  // 由已填值计算每空格的初始候选位掩码。
+  function initCandidates(values) {
+    const cands = new Array(N).fill(0);
+    for (let i = 0; i < N; i++) {
+      if (values[i] !== 0) { cands[i] = 0; continue; }
+      let used = 0;
+      const peers = Logic.PEERS[i];
+      for (let k = 0; k < peers.length; k++) {
+        const v = values[peers[k]];
+        if (v !== 0) used |= (1 << (v - 1));
+      }
+      cands[i] = (~used) & FULL;
+    }
+    return cands;
+  }
+
+  function combinations(arr, k) {
+    const res = [];
+    const n = arr.length;
+    if (k > n) return res;
+    const idx = new Array(k);
+    (function rec(start, depth) {
+      if (depth === k) { res.push(idx.slice()); return; }
+      for (let i = start; i <= n - (k - depth); i++) { idx[depth] = arr[i]; rec(i + 1, depth + 1); }
+    })(0, 0);
+    return res;
+  }
+
+  // 在盘面 s={values,cands} 上跑纯逻辑求解。返回 {solution, tier} 或 null。
+  function solveLogically(values) {
+    const s = { values: values.slice(), cands: initCandidates(values) };
+    let maxTier = 0;
+
+    function place(i, d, tier) {
+      s.values[i] = d;
+      s.cands[i] = 0;
+      if (tier > maxTier) maxTier = tier;
+      const bm = 1 << (d - 1);
+      const peers = Logic.PEERS[i];
+      for (let k = 0; k < peers.length; k++) {
+        const p = peers[k];
+        if (s.values[p] === 0) s.cands[p] &= ~bm;
+      }
+    }
+    function solved() { for (let i = 0; i < N; i++) if (s.values[i] === 0) return false; return true; }
+
+    // T1：唯一候选
+    function tryT1() {
+      for (let i = 0; i < N; i++) {
+        if (s.values[i] !== 0) continue;
+        if (popcount(s.cands[i]) === 1) { place(i, firstDigit(s.cands[i]), 1); return true; }
+      }
+      return false;
+    }
+    // T2：隐藏单
+    function tryT2() {
+      for (let u = 0; u < 27; u++) {
+        const unit = Logic.UNITS[u];
+        for (let d = 1; d <= 9; d++) {
+          const bm = 1 << (d - 1);
+          let cnt = 0, last = -1;
+          for (let q = 0; q < 9; q++) {
+            const i = unit[q];
+            if (s.values[i] !== 0) continue;
+            if (s.cands[i] & bm) { cnt++; last = i; }
+          }
+          if (cnt === 1) { place(last, d, 2); return true; }
+        }
+      }
+      return false;
+    }
+    // T3：区块指向（box→行/列）与声明（行/列→box）
+    function tryT3() {
+      // Case A：box 内的候选集中在同一行/列 -> 从该行/列其余格消除
+      for (let b = 18; b < 27; b++) {
+        const box = Logic.UNITS[b];
+        for (let d = 1; d <= 9; d++) {
+          const bm = 1 << (d - 1);
+          const cells = [];
+          for (let q = 0; q < 9; q++) { const i = box[q]; if (s.values[i] === 0 && (s.cands[i] & bm)) cells.push(i); }
+          if (cells.length < 2) continue;
+          const r0 = Logic.rowOf(cells[0]);
+          if (cells.every(i => Logic.rowOf(i) === r0)) {
+            const row = Logic.UNITS[r0], ex = new Set(cells); let ch = false;
+            for (let q = 0; q < 9; q++) { const i = row[q]; if (!ex.has(i) && s.values[i] === 0 && (s.cands[i] & bm)) { s.cands[i] &= ~bm; ch = true; } }
+            if (ch) { if (3 > maxTier) maxTier = 3; return true; }
+          }
+          const c0 = Logic.colOf(cells[0]);
+          if (cells.every(i => Logic.colOf(i) === c0)) {
+            const col = Logic.UNITS[9 + c0], ex = new Set(cells); let ch = false;
+            for (let q = 0; q < 9; q++) { const i = col[q]; if (!ex.has(i) && s.values[i] === 0 && (s.cands[i] & bm)) { s.cands[i] &= ~bm; ch = true; } }
+            if (ch) { if (3 > maxTier) maxTier = 3; return true; }
+          }
+        }
+      }
+      // Case B：行/列内的候选集中在同一 box -> 从该 box 其余格消除
+      for (let u = 0; u < 18; u++) {
+        const unit = Logic.UNITS[u];
+        for (let d = 1; d <= 9; d++) {
+          const bm = 1 << (d - 1);
+          const cells = [];
+          for (let q = 0; q < 9; q++) { const i = unit[q]; if (s.values[i] === 0 && (s.cands[i] & bm)) cells.push(i); }
+          if (cells.length < 2) continue;
+          const b0 = Logic.boxOf(cells[0]);
+          if (cells.every(i => Logic.boxOf(i) === b0)) {
+            const box = Logic.UNITS[18 + b0], ex = new Set(cells); let ch = false;
+            for (let q = 0; q < 9; q++) { const i = box[q]; if (!ex.has(i) && s.values[i] === 0 && (s.cands[i] & bm)) { s.cands[i] &= ~bm; ch = true; } }
+            if (ch) { if (3 > maxTier) maxTier = 3; return true; }
+          }
+        }
+      }
+      return false;
+    }
+    // T4：数对/三数组（Naked / Hidden）
+    function tryT4() {
+      for (let u = 0; u < 27; u++) {
+        const unit = Logic.UNITS[u];
+        const empties = [];
+        for (let q = 0; q < 9; q++) { const i = unit[q]; if (s.values[i] === 0) empties.push(i); }
+        if (empties.length < 2) continue;
+        for (let n = 2; n <= 3; n++) {
+          if (empties.length < n) continue;
+          // Naked subset
+          const combos = combinations(empties, n);
+          for (const combo of combos) {
+            let union = 0, ok = true;
+            for (const i of combo) { if (popcount(s.cands[i]) !== n) { ok = false; break; } union |= s.cands[i]; }
+            if (!ok || popcount(union) !== n) continue;
+            const ex = new Set(combo); let ch = false;
+            for (const i of empties) { if (ex.has(i)) continue; if (s.cands[i] & union) { s.cands[i] &= ~union; ch = true; } }
+            if (ch) { if (4 > maxTier) maxTier = 4; return true; }
+          }
+          // Hidden subset：n 个数字的候选恰好落在同一组 n 格内 -> 这些格锁定为这 n 个数字
+          const digitCells = {};
+          for (let d = 1; d <= 9; d++) {
+            const bm = 1 << (d - 1); const cells = [];
+            for (const i of empties) if (s.cands[i] & bm) cells.push(i);
+            if (cells.length >= 2 && cells.length <= n) digitCells[d] = cells;
+          }
+          const dl = Object.keys(digitCells).map(Number);
+          if (dl.length >= n) {
+            for (const dcombo of combinations(dl, n)) {
+              const unionCells = new Set();
+              for (const d of dcombo) for (const i of digitCells[d]) unionCells.add(i);
+              if (unionCells.size !== n) continue;
+              let keepMask = 0;
+              for (const d of dcombo) keepMask |= (1 << (d - 1));
+              const otherMask = (~keepMask) & FULL;
+              let ch = false;
+              for (const i of unionCells) { if (s.cands[i] & otherMask) { s.cands[i] &= ~otherMask; ch = true; } }
+              if (ch) { if (4 > maxTier) maxTier = 4; return true; }
+            }
+          }
+        }
+      }
+      return false;
+    }
+    // T5：X-Wing（两行/两列对角配对消除）
+    function tryT5() {
+      for (let d = 1; d <= 9; d++) {
+        const bm = 1 << (d - 1);
+        // 行 -> 列
+        const rowCols = [];
+        for (let r = 0; r < 9; r++) {
+          const cols = [];
+          for (let c = 0; c < 9; c++) { const i = Logic.idx(r, c); if (s.values[i] === 0 && (s.cands[i] & bm)) cols.push(c); }
+          if (cols.length === 2) rowCols[r] = cols;
+        }
+        const rows = Object.keys(rowCols);
+        for (let a = 0; a < rows.length; a++) for (let b = a + 1; b < rows.length; b++) {
+          const r1 = +rows[a], r2 = +rows[b], c1 = rowCols[r1][0], c2 = rowCols[r1][1];
+          if (rowCols[r2][0] === c1 && rowCols[r2][1] === c2) {
+            let ch = false;
+            for (let r = 0; r < 9; r++) {
+              if (r === r1 || r === r2) continue;
+              for (const c of [c1, c2]) { const i = Logic.idx(r, c); if (s.values[i] === 0 && (s.cands[i] & bm)) { s.cands[i] &= ~bm; ch = true; } }
+            }
+            if (ch) { if (5 > maxTier) maxTier = 5; return true; }
+          }
+        }
+        // 列 -> 行
+        const colRows = [];
+        for (let c = 0; c < 9; c++) {
+          const rs = [];
+          for (let r = 0; r < 9; r++) { const i = Logic.idx(r, c); if (s.values[i] === 0 && (s.cands[i] & bm)) rs.push(r); }
+          if (rs.length === 2) colRows[c] = rs;
+        }
+        const cols = Object.keys(colRows);
+        for (let a = 0; a < cols.length; a++) for (let b = a + 1; b < cols.length; b++) {
+          const c1 = +cols[a], c2 = +cols[b], r1 = colRows[c1][0], r2 = colRows[c1][1];
+          if (colRows[c2][0] === r1 && colRows[c2][1] === r2) {
+            let ch = false;
+            for (let c = 0; c < 9; c++) {
+              if (c === c1 || c === c2) continue;
+              for (const r of [r1, r2]) { const i = Logic.idx(r, c); if (s.values[i] === 0 && (s.cands[i] & bm)) { s.cands[i] &= ~bm; ch = true; } }
+            }
+            if (ch) { if (5 > maxTier) maxTier = 5; return true; }
+          }
+        }
+      }
+      return false;
+    }
+
+    while (!solved()) {
+      if (tryT1()) continue;
+      if (tryT2()) continue;
+      if (tryT3()) continue;
+      if (tryT4()) continue;
+      if (tryT5()) continue;
+      return null; // 卡死：需猜测
+    }
+    return { solution: s.values.slice(), tier: maxTier };
+  }
+
+  function grade(puzzle) {
+    const r = solveLogically(Array.from(puzzle.givens));
+    return r ? r.tier : 0;
+  }
+
+  return { solveLogically, grade, _internal: { initCandidates } };
+});
+
+'use strict';
+/**
+ * 谜题生成器（纯函数，无 DOM、无副作用，可在 node 下被测试）。
+ * 依赖 SudokuLogic / SudokuSolver / SudokuGrader。
+ * 该文件会被 build.js 内联进最终单文件 index.html。
+ *
+ * 流程：随机填满完整盘 -> 180° 对合成对挖洞（每挖一对用 countSolutions 校验唯一性）
+ *      -> 按目标难度做技巧分级命中（有限次重试，超出预算取最接近档并标注近似）。
+ *
+ * 暴露：
+ *   fillGrid()                       -> 完整解 Int8Array(81)
+ *   carve(solution, targetGivens)    -> 挖洞后的 givens Int8Array(81)（唯一解）
+ *   generatePuzzle(difficulty)       -> {givens, solution, givensCount, difficulty}
+ *   generateForDifficulty(difficulty, opts) -> 上述 + {grade, approximate}（保证逻辑可解）
+ */
+(function (root, factory) {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = factory(require('./logic.js'), require('./solver.js'), require('./grader.js'));
+  } else {
+    root.SudokuGenerator = factory(root.SudokuLogic, root.SudokuSolver, root.SudokuGrader);
+  }
+})(typeof self !== 'undefined' ? self : this, function (Logic, Solver, Grader) {
+  'use strict';
+
+  const N = 81;
+  const C = (g) => Int8Array.from(g);
+
+  // 难度 -> 目标提示数（越少越难）与期望技巧层级
+  const DIFFICULTY = {
+    easy:   { targetGivens: 40, window: [1, 2] },
+    medium: { targetGivens: 34, window: [3, 3] },
+    hard:   { targetGivens: 30, window: [4, 4] },
+    expert: { targetGivens: 26, window: [5, 5] },
+  };
+
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
+  function inWindow(tier, diff) {
+    const w = DIFFICULTY[diff].window;
+    return tier >= w[0] && tier <= w[1];
+  }
+
+  // 随机回溯填满完整盘。
+  function fillGrid() {
+    const grid = new Array(N).fill(0);
+    function rec(pos) {
+      if (pos === N) return true;
+      if (grid[pos] !== 0) return rec(pos + 1);
+      const digits = shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      for (let k = 0; k < digits.length; k++) {
+        const d = digits[k];
+        let ok = true;
+        const peers = Logic.PEERS[pos];
+        for (let p = 0; p < peers.length; p++) { if (grid[peers[p]] === d) { ok = false; break; } }
+        if (!ok) continue;
+        grid[pos] = d;
+        if (rec(pos + 1)) return true;
+        grid[pos] = 0;
+      }
+      return false;
+    }
+    rec(0);
+    return C(grid);
+  }
+
+  // 180° 对合挖洞：成对移除 (i, 80-i)，每移一对用 countSolutions 校验唯一性，破坏则还原。
+  function carve(solution, targetGivens) {
+    const givens = solution.slice(); // 复制为普通数组便于修改
+    const pairs = [];
+    for (let i = 0; i <= 40; i++) pairs.push(i); // 0..40（含中心点 40）
+    shuffle(pairs);
+    for (let p = 0; p < pairs.length; p++) {
+      const i = pairs[p];
+      const j = 80 - i;
+      const hadI = givens[i] !== 0, hadJ = givens[j] !== 0;
+      if (!hadI && !hadJ) continue;
+      const vi = givens[i], vj = givens[j];
+      givens[i] = 0; givens[j] = 0;
+      if (Solver.countSolutions(givens, 2) !== 1) {
+        givens[i] = vi; givens[j] = vj; // 破坏唯一性 -> 还原
+      }
+      let count = 0;
+      for (let k = 0; k < N; k++) if (givens[k] !== 0) count++;
+      if (count <= targetGivens) break;
+    }
+    return C(givens);
+  }
+
+  function makePuzzle(givens, solution, diff, gradeTier, approximate) {
+    let count = 0;
+    for (let k = 0; k < N; k++) if (givens[k] !== 0) count++;
+    return {
+      givens: C(givens),
+      solution: C(solution),
+      givensCount: count,
+      difficulty: diff,
+      grade: gradeTier,
+      approximate: !!approximate,
+    };
+  }
+
+  // 仅生成唯一解谜题（不保证逻辑可解/难度命中），供 #2 基础流程使用。
+  function generatePuzzle(diff) {
+    const d = DIFFICULTY[diff] ? diff : 'medium';
+    const solution = fillGrid();
+    const givens = carve(solution, DIFFICULTY[d].targetGivens);
+    return makePuzzle(givens, solution, d, 0, false);
+  }
+
+  // 生成并按难度命中：保证逻辑可解（grade>0），尽量落入目标技巧层级窗口；
+  // 超出预算则取最接近档位并标注 approximate。
+  function generateForDifficulty(diff, opts) {
+    const d = DIFFICULTY[diff] ? diff : 'medium';
+    const o = opts || {};
+    const maxAttempts = o.maxAttempts || 150;
+    const timeBudgetMs = o.timeBudgetMs || 600;
+    const t0 = Date.now();
+    const w = DIFFICULTY[d].window;
+    const target = (w[0] + w[1]) / 2;
+
+    let best = null, bestDiff = Infinity;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const solution = fillGrid();
+      const givens = carve(solution, DIFFICULTY[d].targetGivens);
+      const tier = Grader.grade({ givens, solution });
+      if (tier === 0) continue; // 需猜测，弃
+      if (inWindow(tier, d)) return makePuzzle(givens, solution, d, tier, false);
+      const dist = Math.abs(tier - target);
+      if (dist < bestDiff) { bestDiff = dist; best = makePuzzle(givens, solution, d, tier, true); }
+      if (Date.now() - t0 > timeBudgetMs) break;
+    }
+
+    if (best) return best;
+
+    // 兜底：放宽提示数（更易），直到出现逻辑可解盘，确保总能开局。
+    let tg = DIFFICULTY[d].targetGivens + 4;
+    for (let attempt = 0; attempt < maxAttempts && tg <= 60; attempt++) {
+      const solution = fillGrid();
+      const givens = carve(solution, tg);
+      const tier = Grader.grade({ givens, solution });
+      if (tier > 0) return makePuzzle(givens, solution, d, tier, true);
+      if (attempt % 12 === 11) tg += 2;
+    }
+    // 极端兜底：返回满分提示数的逻辑可解盘（必然存在）
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const solution = fillGrid();
+      const givens = carve(solution, 60);
+      const tier = Grader.grade({ givens, solution });
+      if (tier > 0) return makePuzzle(givens, solution, d, tier, true);
+    }
+    // 理论上不可达：返回最简单兜底（fillGrid 已合法，仅透出解）
+    const solution = fillGrid();
+    return makePuzzle(solution, solution, d, 0, true);
+  }
+
+  return {
+    DIFFICULTY, fillGrid, carve, generatePuzzle, generateForDifficulty,
+    _internal: { inWindow, shuffle },
+  };
+});
+
+'use strict';
+/**
  * 对局状态机（GameState + Controller 的纯逻辑部分，无 DOM）。
  * 依赖 SudokuLogic（node 下 require，浏览器下取 window.SudokuLogic）。
  * 该文件会被 build.js 内联进最终单文件 index.html。
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./logic.js'));
+    module.exports = factory(require('./logic.js'), require('./generator.js'));
   } else {
-    root.SudokuGame = factory(root.SudokuLogic);
+    root.SudokuGame = factory(root.SudokuLogic, root.SudokuGenerator);
   }
-})(typeof self !== 'undefined' ? self : this, function (Logic) {
+})(typeof self !== 'undefined' ? self : this, function (Logic, Generator) {
   'use strict';
 
-  // puzzle: { givens: number[] (0=空,1..9), solution?: number[] }
+  // puzzle: { givens, solution, difficulty?, grade?, approximate? }
   function createGame(puzzle) {
     const givens = Array.from(puzzle.givens);
     const solution = puzzle.solution ? Array.from(puzzle.solution) : null;
@@ -349,12 +928,20 @@ html, body {
     const givenMask = givens.map(v => (v !== 0 ? 1 : 0));
     const state = {
       puzzle, givens, solution, values, givenMask,
+      difficulty: puzzle.difficulty || 'medium',
+      grade: puzzle.grade != null ? puzzle.grade : 0,
+      approximate: !!puzzle.approximate,
       selected: null,                              // {r,c}
       status: 'playing',                           // 'playing' | 'won'
       conflicts: new Set(),
     };
     recompute(state);
     return state;
+  }
+
+  // 浏览器内生成新局（用生成器产出唯一解且按难度命中的谜题）。
+  function newGame(difficulty) {
+    return createGame(Generator.generateForDifficulty(difficulty || 'medium'));
   }
 
   function select(state, r, c) {
@@ -390,61 +977,48 @@ html, body {
     return state;
   }
 
-  return { createGame, select, setValue, erase, recompute };
+  return { createGame, newGame, select, setValue, erase, recompute };
 });
 
 'use strict';
 /**
- * UI 层 + 控制器事件绑定（依赖 SudokuLogic / SudokuGame）。
+ * UI 层 + 控制器事件绑定（依赖 SudokuLogic / SudokuGame / SudokuGenerator / SudokuGrader）。
  * node 下（烟雾测试）通过 global 注入 document/window；浏览器下取 window。
  * 该文件会被 build.js 内联进最终单文件 index.html。
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./logic.js'), require('./game.js'), global);
+    module.exports = factory(require('./logic.js'), require('./game.js'), require('./generator.js'), require('./grader.js'), global);
   } else {
-    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root);
+    root.SudokuUI = factory(root.SudokuLogic, root.SudokuGame, root.SudokuGenerator, root.SudokuGrader, root);
   }
-})(typeof self !== 'undefined' ? self : this, function (Logic, Game, docRoot) {
+})(typeof self !== 'undefined' ? self : this, function (Logic, Game, Generator, Grader, docRoot) {
   'use strict';
 
-  // #1 硬编码谜题（Wikipedia 经典样例，唯一解）—— 后续切片替换为生成器
-  const PUZZLE = {
-    givens: [
-      5,3,0, 0,7,0, 0,0,0,
-      6,0,0, 1,9,5, 0,0,0,
-      0,9,8, 0,0,0, 0,6,0,
-      8,0,0, 0,6,0, 0,0,3,
-      4,0,0, 8,0,3, 0,0,1,
-      7,0,0, 0,2,0, 0,0,6,
-      0,6,0, 0,0,0, 2,8,0,
-      0,0,0, 4,1,9, 0,0,5,
-      0,0,0, 0,8,0, 0,7,9,
-    ],
-    solution: [
-      5,3,4,6,7,8,9,1,2,
-      6,7,2,1,9,5,3,4,8,
-      1,9,8,3,4,2,5,6,7,
-      8,5,9,7,6,1,4,2,3,
-      4,2,6,8,5,3,7,9,1,
-      7,1,3,9,2,4,8,5,6,
-      9,6,1,5,3,7,2,8,4,
-      2,8,7,4,1,9,6,3,5,
-      3,4,5,2,8,6,1,7,9,
-    ],
-  };
+  const DIFF_LABELS = { easy: '简单', medium: '中等', hard: '困难', expert: '专家' };
 
   let state = null;
   let cellEls = [];
   let doc = null;
   let boardEl = null;
   let winEl = null;
+  let statusEl = null;
+  let genEl = null;
+  let diffSel = null;
+
+  function currentDifficulty() {
+    return diffSel && diffSel.value ? diffSel.value : 'medium';
+  }
 
   function bootstrap() {
     doc = docRoot.document;
     boardEl = doc.getElementById('board');
     winEl = doc.getElementById('win');
-    state = Game.createGame(PUZZLE);
+    statusEl = doc.getElementById('status');
+    genEl = doc.getElementById('generating');
+    diffSel = doc.getElementById('difficulty');
+
+    state = Game.newGame(currentDifficulty());
 
     buildBoard();
     buildPad();
@@ -497,8 +1071,11 @@ html, body {
   function wireToolbar() {
     const reset = doc.getElementById('btn-reset');
     if (reset) reset.addEventListener('click', resetGame);
+    const newBtn = doc.getElementById('btn-new');
+    if (newBtn) newBtn.addEventListener('click', onNewGame);
+    if (diffSel) diffSel.addEventListener('change', () => { /* 下次点「新局」生效，当前局不变 */ });
     const winReset = doc.getElementById('btn-win-reset');
-    if (winReset) winReset.addEventListener('click', resetGame);
+    if (winReset) winReset.addEventListener('click', onNewGame);
   }
 
   function wireKeyboard() {
@@ -546,8 +1123,22 @@ html, body {
     }
   }
 
+  // 新局：先显示「生成中」，让浏览器有机会绘制，再异步生成（避免白屏）。
+  function onNewGame() {
+    const diff = currentDifficulty();
+    if (genEl) genEl.hidden = false;
+    if (statusEl) statusEl.textContent = '生成中…';
+    // 让「生成中」先渲染，再跑同步生成
+    setTimeout(() => {
+      state = Game.newGame(diff);
+      if (genEl) genEl.hidden = true;
+      render();
+    }, 0);
+  }
+
   function resetGame() {
-    state = Game.createGame(PUZZLE);
+    // 重置当前谜题（清空玩家填入，保留 givens）
+    state = Game.createGame(state.puzzle);
     render();
   }
 
@@ -571,7 +1162,25 @@ html, body {
       el.classList.toggle('same', selVal !== 0 && i !== selIdx && v === selVal);
     }
 
-    if (winEl) winEl.hidden = state.status !== 'won';
+    if (winEl) {
+      winEl.hidden = state.status !== 'won';
+      if (state.status === 'won') {
+        const wt = doc.getElementById('win-text');
+        if (wt) {
+          const lbl = DIFF_LABELS[state.difficulty] || state.difficulty;
+          wt.textContent = '棋盘已填满且唯一解正确。难度：' + lbl;
+        }
+      }
+    }
+
+    if (statusEl) {
+      const lbl = DIFF_LABELS[state.difficulty] || state.difficulty;
+      let t = '难度：' + lbl;
+      if (state.grade > 0) t += ' · 技巧层级 T' + state.grade;
+      if (state.approximate) t += '（近似）';
+      t += ' · 提示数 ' + state.givensCount;
+      statusEl.textContent = t;
+    }
   }
 
   return { bootstrap, _getState: () => state, _cellEls: () => cellEls };

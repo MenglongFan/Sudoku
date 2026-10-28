@@ -6,14 +6,14 @@
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('./logic.js'));
+    module.exports = factory(require('./logic.js'), require('./generator.js'));
   } else {
-    root.SudokuGame = factory(root.SudokuLogic);
+    root.SudokuGame = factory(root.SudokuLogic, root.SudokuGenerator);
   }
-})(typeof self !== 'undefined' ? self : this, function (Logic) {
+})(typeof self !== 'undefined' ? self : this, function (Logic, Generator) {
   'use strict';
 
-  // puzzle: { givens: number[] (0=空,1..9), solution?: number[] }
+  // puzzle: { givens, solution, difficulty?, grade?, approximate? }
   function createGame(puzzle) {
     const givens = Array.from(puzzle.givens);
     const solution = puzzle.solution ? Array.from(puzzle.solution) : null;
@@ -21,12 +21,20 @@
     const givenMask = givens.map(v => (v !== 0 ? 1 : 0));
     const state = {
       puzzle, givens, solution, values, givenMask,
+      difficulty: puzzle.difficulty || 'medium',
+      grade: puzzle.grade != null ? puzzle.grade : 0,
+      approximate: !!puzzle.approximate,
       selected: null,                              // {r,c}
       status: 'playing',                           // 'playing' | 'won'
       conflicts: new Set(),
     };
     recompute(state);
     return state;
+  }
+
+  // 浏览器内生成新局（用生成器产出唯一解且按难度命中的谜题）。
+  function newGame(difficulty) {
+    return createGame(Generator.generateForDifficulty(difficulty || 'medium'));
   }
 
   function select(state, r, c) {
@@ -62,5 +70,5 @@
     return state;
   }
 
-  return { createGame, select, setValue, erase, recompute };
+  return { createGame, newGame, select, setValue, erase, recompute };
 });
