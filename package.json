@@ -1,0 +1,10 @@
+{
+  "name": "sudoku",
+  "version": "0.1.0",
+  "private": true,
+  "description": "单文件零依赖数独网页。src/ 为开发期拆分，build.js 内联产出 index.html。",
+  "scripts": {
+    "test": "node tests/logic.test.js && node tests/game.test.js && node tests/dom-smoke.test.js",
+    "build": "node build.js"
+  }
+}
