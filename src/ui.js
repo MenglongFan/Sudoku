@@ -41,6 +41,9 @@
   let currentHint = null;     // 当前提示对象（#7）：渲染时高亮 cells/target
   let saveTimer = null;       // 节流写盘定时器（#6）
   let recordedWin = false;    // 本局最佳成绩是否已记录（#6）
+  let themeBtn = null;        // 主题切换按钮（#8）
+  let prevValues = null;      // 上一帧盘面值，用于填数淡入（#8）
+  let activeTheme = 'auto';   // 当前主题（内存跟踪，避免降级环境读不到持久化值）
 
   function currentDifficulty() {
     return diffSel && diffSel.value ? diffSel.value : 'medium';
@@ -62,11 +65,13 @@
     pauseEl = doc.getElementById('pause');
     hintBtn = doc.getElementById('btn-hint');
     hintBar = doc.getElementById('hint-bar');
+    themeBtn = doc.getElementById('btn-theme');
 
     buildBoard();
     buildPad();
     wireToolbar();
     wireKeyboard();
+    initTheme();
 
     const saved = readSave();
     if (saved && saved.status === 'playing') {
@@ -139,6 +144,7 @@
     if (btnRedo) btnRedo.addEventListener('click', onRedo);
     if (btnPause) btnPause.addEventListener('click', togglePause);
     if (hintBtn) hintBtn.addEventListener('click', onHint);
+    if (themeBtn) themeBtn.addEventListener('click', onTheme);
     const resume = doc.getElementById('btn-resume');
     if (resume) resume.addEventListener('click', () => setPaused(false));
     const resumeKeep = doc.getElementById('btn-resume-keep');
@@ -189,6 +195,46 @@
       saveTimer = null;
       if (state && state.status === 'playing') writeSave(state);
     }, 500);
+  }
+
+  // ---- #8 主题：auto / light / dark 循环，持久化到 sudoku:theme ----
+  const THEME_KEY = 'sudoku:theme';
+  function readTheme() {
+    const ls = lsGet(); if (!ls) return 'auto';
+    try { const v = ls.getItem(THEME_KEY); return (v === 'light' || v === 'dark' || v === 'auto') ? v : 'auto'; }
+    catch (e) { return 'auto'; }
+  }
+  function persistTheme(t) {
+    const ls = lsGet(); if (!ls) return;
+    try { ls.setItem(THEME_KEY, t); } catch (e) {}
+  }
+  function applyThemeAttr(t) {
+    const de = docRoot.documentElement;
+    if (!de || !de.setAttribute) return;
+    if (t === 'auto') de.removeAttribute('data-theme');
+    else de.setAttribute('data-theme', t);
+  }
+  function themeLabel(t) {
+    return t === 'light' ? '浅色' : t === 'dark' ? '深色' : '跟随系统';
+  }
+  function updateThemeBtn(t) {
+    if (themeBtn) {
+      themeBtn.textContent = '主题：' + themeLabel(t);
+      themeBtn.setAttribute('aria-label', '切换主题，当前' + themeLabel(t));
+    }
+  }
+  function initTheme() {
+    activeTheme = readTheme();
+    applyThemeAttr(activeTheme);
+    updateThemeBtn(activeTheme);
+  }
+  function onTheme() {
+    const order = ['auto', 'light', 'dark'];
+    const nx = order[(order.indexOf(activeTheme) + 1) % 3];
+    activeTheme = nx;
+    applyThemeAttr(nx);
+    persistTheme(nx);
+    updateThemeBtn(nx);
   }
 
   function startNewGame() {
@@ -395,6 +441,7 @@
     for (let i = 0; i < 81; i++) {
       const el = cellEls[i];
       const v = state.values[i];
+      const r = Logic.rowOf(i), c = Logic.colOf(i);
 
       if (v) {
         el.textContent = String(v);
@@ -418,6 +465,21 @@
       el.classList.toggle('same', selVal !== 0 && i !== selIdx && v === selVal);
       el.classList.toggle('hint', currentHint ? currentHint.cells.includes(i) : false);
       el.classList.toggle('hint-target', currentHint ? (i === currentHint.target) : false);
+      // 填数淡入（#8）：本帧从空变有值才触发动画
+      if (prevValues && prevValues[i] === 0 && v !== 0) {
+        el.classList.add('pop');
+        if (!IS_NODE) { const node = el; setTimeout(() => node.classList.remove('pop'), 240); }
+      }
+      // aria-label 增强（#8）：含行列、值/状态、候选、冲突，便于读屏
+      let al = '行' + (r + 1) + '列' + (c + 1);
+      if (v) al += '，值' + v + (given ? '，给定' : '，已填');
+      else if (state.notes[i]) {
+        let cand = '';
+        for (let d = 1; d <= 9; d++) if (state.notes[i] & Logic.bit(d)) cand += ' ' + d;
+        al += '，候选' + (cand || '无');
+      } else al += '，空';
+      if (state.conflicts.has(i)) al += '，冲突';
+      el.setAttribute('aria-label', al);
     }
 
     if (winEl) {
@@ -426,8 +488,15 @@
         const wt = doc.getElementById('win-text');
         if (wt) {
           const lbl = DIFF_LABELS[state.difficulty] || state.difficulty;
-          wt.textContent = '棋盘已填满且唯一解正确。难度：' + lbl;
+          let s = '完成！难度 ' + lbl + ' · 用时 ' + Game.formatTime(state.time);
+          const aux = [];
+          if (state.hintsUsed > 0) aux.push('提示 ' + state.hintsUsed + ' 次');
+          if (state.undosUsed > 0) aux.push('撤销 ' + state.undosUsed + ' 次');
+          s += aux.length ? ' · ' + aux.join(' · ') : ' · 全程无辅助';
+          wt.textContent = s;
         }
+        const wc = doc.getElementById('win-card');
+        if (wc) wc.classList.add('win-pulse');
       }
     }
 
@@ -443,6 +512,22 @@
     }
 
     updateTimer();
+
+    // 数字盘剩余个数（#8）：1–9 各剩几个未填，用完置灰禁用
+    const padEl = doc.getElementById('pad');
+    if (padEl) {
+      const cnt = new Array(10).fill(0);
+      for (let i = 0; i < 81; i++) { const v = state.values[i]; if (v > 0 && v <= 9) cnt[v]++; }
+      for (let d = 1; d <= 9; d++) {
+        const b = padEl.children[d - 1];
+        if (!b) continue;
+        const rem = 9 - cnt[d];
+        b.dataset.remain = String(rem);
+        const done = rem <= 0;
+        b.classList.toggle('pad-done', done);
+        b.disabled = done;
+      }
+    }
 
     if (btnNote) btnNote.setAttribute('aria-pressed', state.mode === 'note' ? 'true' : 'false');
     if (btnUndo) btnUndo.disabled = !Game.canUndo(state);
@@ -471,7 +556,10 @@
     }
 
     scheduleSave();
+
+    if (!prevValues) prevValues = state.values.slice();
+    else for (let i = 0; i < 81; i++) prevValues[i] = state.values[i];
   }
 
-  return { bootstrap, _getState: () => state, _cellEls: () => cellEls };
+  return { bootstrap, _getState: () => state, _cellEls: () => cellEls, _render: render };
 });

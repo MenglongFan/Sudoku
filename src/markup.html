@@ -14,6 +14,7 @@
       <span id="timer" class="timer" aria-live="off">00:00</span>
       <button id="btn-new" class="btn" type="button">新局</button>
       <button id="btn-reset" class="btn btn-ghost" type="button">重置</button>
+      <button id="btn-theme" class="btn btn-ghost" type="button" aria-label="切换主题">主题</button>
     </div>
   </header>
 
@@ -44,7 +45,7 @@
 </div>
 
 <div id="win" class="win-overlay" hidden>
-  <div class="win-card">
+  <div class="win-card" id="win-card">
     <h2>完成 🎉</h2>
     <p id="win-text">棋盘已填满且唯一解正确。</p>
     <p id="win-best" class="win-best"></p>

@@ -263,7 +263,22 @@ html, body {
   cursor: pointer;
   transition: background 0.12s ease, transform 0.05s ease;
   min-height: 44px;
+  position: relative;
 }
+/* 数字盘剩余个数角标（#8）：右下角小字，用完置灰 */
+.pad-num::after {
+  content: attr(data-remain);
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 400;
+  color: var(--muted);
+  pointer-events: none;
+}
+.pad-num.pad-done { opacity: 0.4; color: var(--muted); cursor: not-allowed; }
+.pad-num.pad-done::after { color: var(--conflict); }
 .pad-num:hover { background: var(--panel-2); }
 .pad-num:active { transform: translateY(1px); }
 .pad-erase { color: var(--muted); }
@@ -329,7 +344,66 @@ html, body {
 
 @media (prefers-reduced-motion: reduce) {
   .cell, .btn, .pad-num { transition: none; }
+  .cell.pop, .win-card.win-pulse { animation: none; }
 }
+
+/* 主题手动覆盖（#8）：data-theme 优先级高于 prefers-color-scheme，实现手动切换 */
+:root[data-theme="light"] {
+  --bg: #f4f5fb;
+  --panel: #ffffff;
+  --panel-2: #eef0f7;
+  --line: #cfd3e0;
+  --line-strong: #8a90a6;
+  --text: #1c2030;
+  --muted: #6b7180;
+  --accent: #5b6cff;
+  --accent-weak: #e7eaff;
+  --given: #1c2030;
+  --conflict: #e5484d;
+  --peer-bg: #eef1f8;
+  --same-bg: #dfe6ff;
+  --selected-bg: #c9d2ff;
+  --shadow: 0 6px 24px rgba(20, 24, 48, 0.10);
+  --hint-bg: #fff3bf;
+  --hint-target-bg: #ffd43b;
+  --hint-border: #f08c00;
+  --conflict-weak: #ffe3e3;
+}
+:root[data-theme="dark"] {
+  --bg: #0f1117;
+  --panel: #171a23;
+  --panel-2: #1f2330;
+  --line: #2c3140;
+  --line-strong: #4b5266;
+  --text: #e6e8ef;
+  --muted: #9aa0b0;
+  --accent: #7c8cff;
+  --accent-weak: #232a44;
+  --given: #e6e8ef;
+  --conflict: #ff6b6f;
+  --peer-bg: #1d2230;
+  --same-bg: #2a3354;
+  --selected-bg: #36406b;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --hint-bg: #3a2f12;
+  --hint-target-bg: #6b4f12;
+  --hint-border: #f0a000;
+  --conflict-weak: #3a1818;
+}
+
+/* 动效（#8）：填数淡入 + 完成脉冲，均克制 */
+@keyframes cell-pop {
+  0% { transform: scale(0.7); opacity: 0.35; }
+  60% { transform: scale(1.08); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.cell.pop { animation: cell-pop 0.22s ease; }
+@keyframes win-pulse {
+  0% { transform: scale(0.92); opacity: 0.6; }
+  60% { transform: scale(1.02); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.win-card.win-pulse { animation: win-pulse 0.4s ease; }
 
 </style>
 </head>
@@ -350,6 +424,7 @@ html, body {
       <span id="timer" class="timer" aria-live="off">00:00</span>
       <button id="btn-new" class="btn" type="button">新局</button>
       <button id="btn-reset" class="btn btn-ghost" type="button">重置</button>
+      <button id="btn-theme" class="btn btn-ghost" type="button" aria-label="切换主题">主题</button>
     </div>
   </header>
 
@@ -380,7 +455,7 @@ html, body {
 </div>
 
 <div id="win" class="win-overlay" hidden>
-  <div class="win-card">
+  <div class="win-card" id="win-card">
     <h2>完成 🎉</h2>
     <p id="win-text">棋盘已填满且唯一解正确。</p>
     <p id="win-best" class="win-best"></p>
@@ -1514,6 +1589,9 @@ html, body {
   let currentHint = null;     // 当前提示对象（#7）：渲染时高亮 cells/target
   let saveTimer = null;       // 节流写盘定时器（#6）
   let recordedWin = false;    // 本局最佳成绩是否已记录（#6）
+  let themeBtn = null;        // 主题切换按钮（#8）
+  let prevValues = null;      // 上一帧盘面值，用于填数淡入（#8）
+  let activeTheme = 'auto';   // 当前主题（内存跟踪，避免降级环境读不到持久化值）
 
   function currentDifficulty() {
     return diffSel && diffSel.value ? diffSel.value : 'medium';
@@ -1535,11 +1613,13 @@ html, body {
     pauseEl = doc.getElementById('pause');
     hintBtn = doc.getElementById('btn-hint');
     hintBar = doc.getElementById('hint-bar');
+    themeBtn = doc.getElementById('btn-theme');
 
     buildBoard();
     buildPad();
     wireToolbar();
     wireKeyboard();
+    initTheme();
 
     const saved = readSave();
     if (saved && saved.status === 'playing') {
@@ -1612,6 +1692,7 @@ html, body {
     if (btnRedo) btnRedo.addEventListener('click', onRedo);
     if (btnPause) btnPause.addEventListener('click', togglePause);
     if (hintBtn) hintBtn.addEventListener('click', onHint);
+    if (themeBtn) themeBtn.addEventListener('click', onTheme);
     const resume = doc.getElementById('btn-resume');
     if (resume) resume.addEventListener('click', () => setPaused(false));
     const resumeKeep = doc.getElementById('btn-resume-keep');
@@ -1662,6 +1743,46 @@ html, body {
       saveTimer = null;
       if (state && state.status === 'playing') writeSave(state);
     }, 500);
+  }
+
+  // ---- #8 主题：auto / light / dark 循环，持久化到 sudoku:theme ----
+  const THEME_KEY = 'sudoku:theme';
+  function readTheme() {
+    const ls = lsGet(); if (!ls) return 'auto';
+    try { const v = ls.getItem(THEME_KEY); return (v === 'light' || v === 'dark' || v === 'auto') ? v : 'auto'; }
+    catch (e) { return 'auto'; }
+  }
+  function persistTheme(t) {
+    const ls = lsGet(); if (!ls) return;
+    try { ls.setItem(THEME_KEY, t); } catch (e) {}
+  }
+  function applyThemeAttr(t) {
+    const de = docRoot.documentElement;
+    if (!de || !de.setAttribute) return;
+    if (t === 'auto') de.removeAttribute('data-theme');
+    else de.setAttribute('data-theme', t);
+  }
+  function themeLabel(t) {
+    return t === 'light' ? '浅色' : t === 'dark' ? '深色' : '跟随系统';
+  }
+  function updateThemeBtn(t) {
+    if (themeBtn) {
+      themeBtn.textContent = '主题：' + themeLabel(t);
+      themeBtn.setAttribute('aria-label', '切换主题，当前' + themeLabel(t));
+    }
+  }
+  function initTheme() {
+    activeTheme = readTheme();
+    applyThemeAttr(activeTheme);
+    updateThemeBtn(activeTheme);
+  }
+  function onTheme() {
+    const order = ['auto', 'light', 'dark'];
+    const nx = order[(order.indexOf(activeTheme) + 1) % 3];
+    activeTheme = nx;
+    applyThemeAttr(nx);
+    persistTheme(nx);
+    updateThemeBtn(nx);
   }
 
   function startNewGame() {
@@ -1868,6 +1989,7 @@ html, body {
     for (let i = 0; i < 81; i++) {
       const el = cellEls[i];
       const v = state.values[i];
+      const r = Logic.rowOf(i), c = Logic.colOf(i);
 
       if (v) {
         el.textContent = String(v);
@@ -1891,6 +2013,21 @@ html, body {
       el.classList.toggle('same', selVal !== 0 && i !== selIdx && v === selVal);
       el.classList.toggle('hint', currentHint ? currentHint.cells.includes(i) : false);
       el.classList.toggle('hint-target', currentHint ? (i === currentHint.target) : false);
+      // 填数淡入（#8）：本帧从空变有值才触发动画
+      if (prevValues && prevValues[i] === 0 && v !== 0) {
+        el.classList.add('pop');
+        if (!IS_NODE) { const node = el; setTimeout(() => node.classList.remove('pop'), 240); }
+      }
+      // aria-label 增强（#8）：含行列、值/状态、候选、冲突，便于读屏
+      let al = '行' + (r + 1) + '列' + (c + 1);
+      if (v) al += '，值' + v + (given ? '，给定' : '，已填');
+      else if (state.notes[i]) {
+        let cand = '';
+        for (let d = 1; d <= 9; d++) if (state.notes[i] & Logic.bit(d)) cand += ' ' + d;
+        al += '，候选' + (cand || '无');
+      } else al += '，空';
+      if (state.conflicts.has(i)) al += '，冲突';
+      el.setAttribute('aria-label', al);
     }
 
     if (winEl) {
@@ -1899,8 +2036,15 @@ html, body {
         const wt = doc.getElementById('win-text');
         if (wt) {
           const lbl = DIFF_LABELS[state.difficulty] || state.difficulty;
-          wt.textContent = '棋盘已填满且唯一解正确。难度：' + lbl;
+          let s = '完成！难度 ' + lbl + ' · 用时 ' + Game.formatTime(state.time);
+          const aux = [];
+          if (state.hintsUsed > 0) aux.push('提示 ' + state.hintsUsed + ' 次');
+          if (state.undosUsed > 0) aux.push('撤销 ' + state.undosUsed + ' 次');
+          s += aux.length ? ' · ' + aux.join(' · ') : ' · 全程无辅助';
+          wt.textContent = s;
         }
+        const wc = doc.getElementById('win-card');
+        if (wc) wc.classList.add('win-pulse');
       }
     }
 
@@ -1916,6 +2060,22 @@ html, body {
     }
 
     updateTimer();
+
+    // 数字盘剩余个数（#8）：1–9 各剩几个未填，用完置灰禁用
+    const padEl = doc.getElementById('pad');
+    if (padEl) {
+      const cnt = new Array(10).fill(0);
+      for (let i = 0; i < 81; i++) { const v = state.values[i]; if (v > 0 && v <= 9) cnt[v]++; }
+      for (let d = 1; d <= 9; d++) {
+        const b = padEl.children[d - 1];
+        if (!b) continue;
+        const rem = 9 - cnt[d];
+        b.dataset.remain = String(rem);
+        const done = rem <= 0;
+        b.classList.toggle('pad-done', done);
+        b.disabled = done;
+      }
+    }
 
     if (btnNote) btnNote.setAttribute('aria-pressed', state.mode === 'note' ? 'true' : 'false');
     if (btnUndo) btnUndo.disabled = !Game.canUndo(state);
@@ -1944,9 +2104,12 @@ html, body {
     }
 
     scheduleSave();
+
+    if (!prevValues) prevValues = state.values.slice();
+    else for (let i = 0; i < 81; i++) prevValues[i] = state.values[i];
   }
 
-  return { bootstrap, _getState: () => state, _cellEls: () => cellEls };
+  return { bootstrap, _getState: () => state, _cellEls: () => cellEls, _render: render };
 });
 
 SudokuUI.bootstrap();

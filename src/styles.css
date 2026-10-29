@@ -256,7 +256,22 @@ html, body {
   cursor: pointer;
   transition: background 0.12s ease, transform 0.05s ease;
   min-height: 44px;
+  position: relative;
 }
+/* 数字盘剩余个数角标（#8）：右下角小字，用完置灰 */
+.pad-num::after {
+  content: attr(data-remain);
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 400;
+  color: var(--muted);
+  pointer-events: none;
+}
+.pad-num.pad-done { opacity: 0.4; color: var(--muted); cursor: not-allowed; }
+.pad-num.pad-done::after { color: var(--conflict); }
 .pad-num:hover { background: var(--panel-2); }
 .pad-num:active { transform: translateY(1px); }
 .pad-erase { color: var(--muted); }
@@ -322,4 +337,63 @@ html, body {
 
 @media (prefers-reduced-motion: reduce) {
   .cell, .btn, .pad-num { transition: none; }
+  .cell.pop, .win-card.win-pulse { animation: none; }
 }
+
+/* 主题手动覆盖（#8）：data-theme 优先级高于 prefers-color-scheme，实现手动切换 */
+:root[data-theme="light"] {
+  --bg: #f4f5fb;
+  --panel: #ffffff;
+  --panel-2: #eef0f7;
+  --line: #cfd3e0;
+  --line-strong: #8a90a6;
+  --text: #1c2030;
+  --muted: #6b7180;
+  --accent: #5b6cff;
+  --accent-weak: #e7eaff;
+  --given: #1c2030;
+  --conflict: #e5484d;
+  --peer-bg: #eef1f8;
+  --same-bg: #dfe6ff;
+  --selected-bg: #c9d2ff;
+  --shadow: 0 6px 24px rgba(20, 24, 48, 0.10);
+  --hint-bg: #fff3bf;
+  --hint-target-bg: #ffd43b;
+  --hint-border: #f08c00;
+  --conflict-weak: #ffe3e3;
+}
+:root[data-theme="dark"] {
+  --bg: #0f1117;
+  --panel: #171a23;
+  --panel-2: #1f2330;
+  --line: #2c3140;
+  --line-strong: #4b5266;
+  --text: #e6e8ef;
+  --muted: #9aa0b0;
+  --accent: #7c8cff;
+  --accent-weak: #232a44;
+  --given: #e6e8ef;
+  --conflict: #ff6b6f;
+  --peer-bg: #1d2230;
+  --same-bg: #2a3354;
+  --selected-bg: #36406b;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --hint-bg: #3a2f12;
+  --hint-target-bg: #6b4f12;
+  --hint-border: #f0a000;
+  --conflict-weak: #3a1818;
+}
+
+/* 动效（#8）：填数淡入 + 完成脉冲，均克制 */
+@keyframes cell-pop {
+  0% { transform: scale(0.7); opacity: 0.35; }
+  60% { transform: scale(1.08); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.cell.pop { animation: cell-pop 0.22s ease; }
+@keyframes win-pulse {
+  0% { transform: scale(0.92); opacity: 0.6; }
+  60% { transform: scale(1.02); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.win-card.win-pulse { animation: win-pulse 0.4s ease; }

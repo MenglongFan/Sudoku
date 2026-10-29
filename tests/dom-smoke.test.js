@@ -159,4 +159,39 @@ test('提示：按钮存在，点击后计数+1、提示条显示文案、棋盘
   assert.ok(hasHint, '至少一格应带提示高亮类');
 });
 
+test('主题切换按钮：存在且在 跟随系统/浅色/深色 间循环', () => {
+  const tb = elementsById['btn-theme'];
+  assert.ok(tb, '主题按钮应存在');
+  assert.ok(tb.textContent.includes('跟随系统'), '初始应为跟随系统（localStorage 缺失→auto）');
+  fire(tb, 'click');
+  assert.ok(tb.textContent.includes('浅色'), '第一次点击应切到浅色');
+  fire(tb, 'click');
+  assert.ok(tb.textContent.includes('深色'), '第二次点击应切到深色');
+  fire(tb, 'click');
+  assert.ok(tb.textContent.includes('跟随系统'), '第三次点击应回到跟随系统');
+});
+
+test('数字盘显示每个数字剩余个数（0–9）', () => {
+  const pad = elementsById['pad'];
+  for (let d = 1; d <= 9; d++) {
+    const b = pad.children[d - 1];
+    assert.ok(b, '数字 ' + d + ' 按钮应存在');
+    const rem = Number(b.dataset.remain);
+    assert.ok(rem >= 0 && rem <= 9, '剩余数应在 0–9：' + rem);
+  }
+});
+
+test('胜利统计卡增强：含难度 / 用时 / 无辅助', () => {
+  const st = UI._getState();
+  st.hintsUsed = 0;
+  st.undosUsed = 0;
+  st.status = 'won';
+  UI._render();
+  const wt = elementsById['win-text'];
+  assert.ok(wt.textContent.includes('难度'), '应含难度');
+  assert.ok(wt.textContent.includes('用时'), '应含用时');
+  assert.ok(wt.textContent.includes('无辅助'), '未用辅助时应含“无辅助”');
+  assert.strictEqual(elementsById['win'].hidden, false, '胜利遮罩应显示');
+});
+
 console.log(`\n${passed} 个测试通过`);
